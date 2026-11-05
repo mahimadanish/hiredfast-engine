@@ -14,7 +14,8 @@ app = Flask(__name__)
 DOMAIN = "hiredfast.online"
 SITE_URL = f"https://{DOMAIN}"
 KEY_FILE = "indexing_key.json"
-INDEXNOW_KEY = "hiredfast_indexnow_secret_key"
+INDEXNOW_KEY_NAME = "hiredfast_indexnow_secret_key.txt"
+CLOUDFLARE_DEPLOY_HOOK = os.environ.get("CLOUDFLARE_DEPLOY_HOOK", "")
 
 # HTML DASHBOARD TEMPLATE
 HTML_UI = """
@@ -138,10 +139,15 @@ def trigger_google_indexing(hub_url):
 
 def trigger_indexnow(urls):
     try:
+        key_value = "hiredfast_indexnow_secret_key"
+        if os.path.exists(INDEXNOW_KEY_NAME):
+            with open(INDEXNOW_KEY_NAME, "r") as f:
+                key_value = f.read().strip()
+
         payload = {
             "host": DOMAIN,
-            "key": INDEXNOW_KEY,
-            "keyLocation": f"{SITE_URL}/{INDEXNOW_KEY}.txt",
+            "key": key_value,
+            "keyLocation": f"{SITE_URL}/{INDEXNOW_KEY_NAME}",
             "urlList": urls
         }
         res = requests.post("https://api.indexnow.org/indexnow", json=payload, timeout=10)
@@ -149,9 +155,32 @@ def trigger_indexnow(urls):
     except Exception as e:
         return f"[-] IndexNow Exception: {e}"
 
+# --- ROUTES ---
+
 @app.route("/")
 def index():
     return render_template_string(HTML_UI, logs="")
+
+@app.route("/index.html")
+def serve_index_html():
+    if os.path.exists("index.html"):
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read(), 200, {'Content-Type': 'text/html'}
+    return "index.html not generated yet.", 404
+
+@app.route("/feed.xml")
+def serve_feed_xml():
+    if os.path.exists("feed.xml"):
+        with open("feed.xml", "r", encoding="utf-8") as f:
+            return f.read(), 200, {'Content-Type': 'application/xml'}
+    return "feed.xml not generated yet.", 404
+
+@app.route(f"/{INDEXNOW_KEY_NAME}")
+def indexnow_verification_file():
+    if os.path.exists(INDEXNOW_KEY_NAME):
+        with open(INDEXNOW_KEY_NAME, "r") as f:
+            return f.read(), 200, {'Content-Type': 'text/plain'}
+    return "Key file not found", 404
 
 @app.route("/broadcast", methods=["POST"])
 def broadcast():
@@ -175,23 +204,26 @@ def broadcast():
     bridge_urls = [hub_url, f"{SITE_URL}/feed.xml"] + target_urls
     log_output += trigger_indexnow(bridge_urls) + "\n"
     
-    log_output += "\n[✔] Pipeline complete! Re-upload index.html and feed.xml to Cloudflare Pages."
+    # 4. Cloudflare Deploy Hook check
+    if CLOUDFLARE_DEPLOY_HOOK:
+        try:
+            cf_res = requests.post(CLOUDFLARE_DEPLOY_HOOK, timeout=10)
+            if cf_res.status_code == 200:
+                log_output += "[+] Cloudflare Pages auto-deploy triggered successfully!\n"
+            else:
+                log_output += f"[-] Cloudflare deploy hook warning: Status {cf_res.status_code}\n"
+        except Exception as cf_e:
+            log_output += f"[-] Cloudflare Exception: {cf_e}\n"
+    else:
+        log_output += "\n[✔] Pipeline complete!"
 
     return render_template_string(HTML_UI, logs=log_output)
 
-# --- NEW ADDITIONS FOR THE DYNAMIC ENGINE ---
-
 @app.route('/gateway/<path:target_slug>')
 def dynamic_gateway(target_slug):
-    """
-    Dynamically renders a bridge page using templates/bridge.html on the fly.
-    Example: http://127.0.0.1:5000/gateway/telegra.ph/Your-Sample-Target-Link-123
-    """
     target_url = unquote(target_slug)
-    
     if not target_url.startswith('http://') and not target_url.startswith('https://'):
         target_url = 'https://' + target_url
-
     return render_template('bridge.html', target_url=target_url)
 
 if __name__ == "__main__":

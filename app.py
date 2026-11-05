@@ -1,5 +1,5 @@
 from flask import Flask, render_template_string, request, jsonify, abort
-from bs4 import BeautifulSoup
+from html.parser import HTMLParser
 import json, re, time, random, requests
 
 app = Flask(__name__)
@@ -17,6 +17,29 @@ JOB_ROLES = [
 ]
 JOB_LOCATIONS = ["Remote", "Hybrid - New York", "Remote - US", "Hybrid - London", "Remote - Canada"]
 SALARY_RANGES = ["$55,000 - $70,000 / year", "$65,000 - $85,000 / year", "$80,000 - $105,000 / year"]
+
+class MetaTitleExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.og_title = None
+        self.in_title = False
+        self.html_title = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        if tag == 'meta':
+            if attrs_dict.get('property') == 'og:title' or attrs_dict.get('name') == 'og:title':
+                self.og_title = attrs_dict.get('content')
+        elif tag == 'title':
+            self.in_title = True
+
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self.in_title = False
+
+    def handle_data(self, data):
+        if self.in_title and not self.html_title:
+            self.html_title = data.strip()
 
 def clean_expired_jobs():
     current_time = time.time()
@@ -36,14 +59,12 @@ def fetch_or_generate_title(url):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
         if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            og_title = soup.find("meta", property="og:title")
-            if og_title and og_title.get("content"):
-                return og_title["content"].strip()
-            if soup.title and soup.title.string:
-                title = soup.title.string.strip()
-                if len(title) > 5:
-                    return title
+            parser = MetaTitleExtractor()
+            parser.feed(response.text)
+            if parser.og_title:
+                return parser.og_title.strip()
+            if parser.html_title and len(parser.html_title) > 5:
+                return parser.html_title
     except Exception:
         pass
     return generate_synthetic_job_title(url)
@@ -156,7 +177,6 @@ def api_broadcast():
     }
     jobs_db.insert(0, new_job)
 
-    # Trigger background WebSub / PubSubHubbub notification ping to Google
     try:
         requests.post("https://pubsubhubbub.appspot.com/", data={
             "hub.mode": "publish",
@@ -191,7 +211,6 @@ def rss_feed():
             <link>{j['target_url']}</link>
         </item>"""
     
-    # RSS Feed with WebSub link header included for instant Google indexing alerts
     rss_content = f"""<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0">
         <channel>

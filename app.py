@@ -1,230 +1,208 @@
-import os
-import json
-import requests
-import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
-from urllib.parse import unquote
-from flask import Flask, render_template_string, render_template, request, Response
-from google.oauth2 import service_account
-from google.auth.transport.requests import Request
+from flask import Flask, render_template_string, request, jsonify, abort
+from bs4 import BeautifulSoup
+import json, re, time, random, requests
 
 app = Flask(__name__)
 
-# CONFIGURATION
-DOMAIN = "hiredfast.online"
-SITE_URL = f"https://{DOMAIN}"
-KEY_FILE = "indexing_key.json"
-INDEXNOW_KEY_NAME = "hiredfast_indexnow_secret_key.txt"
-CLOUDFLARE_DEPLOY_HOOK = os.environ.get("CLOUDFLARE_DEPLOY_HOOK", "")
+EXPIRY_SECONDS = 3 * 3600  # 3 Hours TTL
+ADMIN_API_KEY = "hf_secret_key_98234729"
 
-# HTML DASHBOARD TEMPLATE
-HTML_UI = """
+jobs_db = []
+
+JOB_PREFIXES = ["Senior", "Lead", "Associate", "Principal", "Remote", "Global"]
+JOB_ROLES = [
+    "Operations Specialist", "Digital Marketing Specialist", "Systems Analyst",
+    "Customer Success Manager", "Technical Project Coordinator", "Data Analyst",
+    "Content Strategist", "Business Development Executive", "Software Engineer"
+]
+JOB_LOCATIONS = ["Remote", "Hybrid - New York", "Remote - US", "Hybrid - London", "Remote - Canada"]
+SALARY_RANGES = ["$55,000 - $70,000 / year", "$65,000 - $85,000 / year", "$80,000 - $105,000 / year"]
+
+def clean_expired_jobs():
+    current_time = time.time()
+    global jobs_db
+    jobs_db = [j for j in jobs_db if (current_time - j['created_at']) < EXPIRY_SECONDS]
+
+def generate_synthetic_job_title(url):
+    slug_part = url.rstrip('/').split('/')[-1]
+    clean_words = re.sub(r'[^a-zA-Z0-9]+', ' ', slug_part).title().strip()
+    if len(clean_words) > 3 and not clean_words.isnumeric():
+        prefix = random.choice(["Hiring:", "Urgent Opening:", "Remote Role:"])
+        return f"{prefix} {clean_words} Specialist"
+    return f"{random.choice(JOB_PREFIXES)} {random.choice(JOB_ROLES)}"
+
+def fetch_or_generate_title(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                return og_title["content"].strip()
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+                if len(title) > 5:
+                    return title
+    except Exception:
+        pass
+    return generate_synthetic_job_title(url)
+
+HOME_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>HiredFast Automated Control Panel</title>
+    <title>HiredFast - Active Career Opportunities</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f4f6f9; color: #333; }
-        .card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        textarea { width: 100%; height: 180px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 14px; margin-bottom: 20px; box-sizing: border-box; }
-        button { background: #007bff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        .logs { background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 4px; font-family: monospace; margin-top: 20px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
-        h1 { color: #111; margin-top: 0; }
+        body { font-family: system-ui, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 2rem; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #e2e8f0; }
+        .badge { background: #e0f2fe; color: #0369a1; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; }
+        a.btn { display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 8px 16px; border-radius: 6px; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>🚀 HiredFast Indexing Control Panel</h1>
-        <p>Paste your third-party target URLs below (one per line). Submitting will instantly update your hub, inject schemas, and fire all indexing APIs automatically.</p>
-        
-        <form method="POST" action="/broadcast">
-            <textarea name="urls" placeholder="https://example.com/target-url-1\nhttps://example.com/target-url-2"></textarea><br>
-            <button type="submit">Broadcast & Trigger Indexing</button>
-        </form>
-
-        {% if logs %}
-            <div class="logs"><strong>Execution Log:</strong>\n{{ logs }}</div>
+    <div class="container">
+        <h1>Latest Open Positions</h1>
+        {% if jobs %}
+            {% for job in jobs %}
+            <div class="card">
+                <span class="badge">{{ job.location }}</span>
+                <h2>{{ job.title }}</h2>
+                <p><strong>Compensation:</strong> {{ job.salary }}</p>
+                <a class="btn" href="{{ job.target_url }}" target="_blank">View Listing & Apply &rarr;</a>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>No active openings at this moment.</p>
         {% endif %}
     </div>
 </body>
 </html>
 """
 
-def generate_job_schema(title, description, target_url):
-    schema = {
-        "@context": "https://schema.org/",
-        "@type": "JobPosting",
-        "title": title,
-        "description": description,
-        "datePosted": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "employmentType": "FULL_TIME",
-        "hiringOrganization": {
-            "@type": "Organization",
-            "name": "HiredFast Global Network",
-            "sameAs": SITE_URL
-        },
-        "jobLocation": {
-            "@type": "Place",
-            "address": {
-                "@type": "PostalAddress",
-                "addressLocality": "Remote",
-                "addressCountry": "US"
-            }
-        },
-        "directApply": True,
-        "url": target_url
-    }
-    return f'<script type="application/ld+json">{json.dumps(schema)}</script>'
-
-def build_bridge_assets(target_urls):
-    html_items = ""
-    for idx, url in enumerate(target_urls, 1):
-        title = f"Verified Career Opportunity #{idx} – Direct Gateway"
-        desc = f"Access verified details and direct tracking resources for listing: {url}"
-        schema_json = generate_job_schema(title, desc, url)
-        
-        html_items += f"""
-        <article style="border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; border-radius: 5px;">
-            {schema_json}
-            <h2>{title}</h2>
-            <p>{desc}</p>
-            <p><a href="{url}" target="_blank" rel="noopener">Access Listing Direct</a></p>
-        </article>
-        """
-
-    full_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>HiredFast Verification Feed</title></head>
-<body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px;">
-    <h1>HiredFast Network - Dynamic Crawl Hub</h1>
-    <p>Last Updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
-    <hr style="margin-bottom: 20px;">
-    {html_items}
-</body>
-</html>"""
-
-    with open("index.html", "w", encoding="utf-8") as f:
-        f.write(full_html)
-
-    # Generate RSS Feed
-    rss = ET.Element("rss", version="2.0")
-    channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = "HiredFast Indexing Signal Feed"
-    ET.SubElement(channel, "link").text = SITE_URL
-    
-    for idx, url in enumerate(target_urls, 1):
-        item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = f"Verified Gateway #{idx}"
-        ET.SubElement(item, "link").text = url
-
-    ET.ElementTree(rss).write("feed.xml", encoding="utf-8", xml_declaration=True)
-
-def trigger_google_indexing(hub_url):
-    if not os.path.exists(KEY_FILE):
-        return "[-] Error: indexing_key.json missing!"
-    try:
-        scopes = ["https://www.googleapis.com/auth/indexing"]
-        credentials = service_account.Credentials.from_service_account_file(KEY_FILE, scopes=scopes)
-        credentials.refresh(Request())
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {credentials.token}"}
-        payload = {"url": hub_url, "type": "URL_UPDATED"}
-        res = requests.post("https://indexing.googleapis.com/v3/urlNotifications:publish", headers=headers, json=payload, timeout=10)
-        if res.status_code == 200:
-            return f"[+] Google Indexing API Success: {hub_url}"
-        return f"[-] Google API Error: {res.text}"
-    except Exception as e:
-        return f"[-] Google Exception: {e}"
-
-def trigger_indexnow(urls):
-    try:
-        key_value = "hiredfast_indexnow_secret_key"
-        if os.path.exists(INDEXNOW_KEY_NAME):
-            with open(INDEXNOW_KEY_NAME, "r") as f:
-                key_value = f.read().strip()
-
-        payload = {
-            "host": DOMAIN,
-            "key": key_value,
-            "keyLocation": f"{SITE_URL}/{INDEXNOW_KEY_NAME}",
-            "urlList": urls
+JOB_PAGE_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ job.title }} - HiredFast Careers</title>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org/",
+      "@type": "JobPosting",
+      "title": "{{ job.title }}",
+      "jobLocation": {
+        "@type": "Place",
+        "address": {
+          "@type": "PostalAddress",
+          "addressLocality": "{{ job.location }}"
         }
-        res = requests.post("https://api.indexnow.org/indexnow", json=payload, timeout=10)
-        return f"[+] IndexNow Response Code: {res.status_code}"
-    except Exception as e:
-        return f"[-] IndexNow Exception: {e}"
+      },
+      "baseSalary": {
+        "@type": "MonetaryAmount",
+        "currency": "USD",
+        "value": "{{ job.salary }}"
+      }
+    }
+    </script>
+</head>
+<body>
+    <h1>{{ job.title }}</h1>
+    <p>Location: {{ job.location }}</p>
+    <p>Compensation: {{ job.salary }}</p>
+    <a href="{{ job.target_url }}">Apply on Partner Site</a>
+</body>
+</html>
+"""
 
-# --- ROUTES ---
+@app.route('/')
+def home():
+    clean_expired_jobs()
+    return render_template_string(HOME_TEMPLATE, jobs=jobs_db)
 
-@app.route("/")
-def index():
-    return render_template_string(HTML_UI, logs="")
+@app.route('/robots.txt')
+def robots():
+    content = "User-agent: *\nAllow: /\nSitemap: https://hiredfast.online/feed.xml"
+    return content, 200, {'Content-Type': 'text/plain'}
 
-@app.route("/index.html")
-def serve_index_html():
-    if os.path.exists("index.html"):
-        with open("index.html", "r", encoding="utf-8") as f:
-            return f.read(), 200, {'Content-Type': 'text/html'}
-    return "index.html not generated yet.", 404
-
-@app.route("/feed.xml")
-def serve_feed_xml():
-    if os.path.exists("feed.xml"):
-        with open("feed.xml", "r", encoding="utf-8") as f:
-            return f.read(), 200, {'Content-Type': 'application/xml'}
-    return "feed.xml not generated yet.", 404
-
-@app.route(f"/{INDEXNOW_KEY_NAME}")
-def indexnow_verification_file():
-    if os.path.exists(INDEXNOW_KEY_NAME):
-        with open(INDEXNOW_KEY_NAME, "r") as f:
-            return f.read(), 200, {'Content-Type': 'text/plain'}
-    return "Key file not found", 404
-
-@app.route("/broadcast", methods=["POST"])
-def broadcast():
-    raw_text = request.form.get("urls", "")
-    target_urls = [line.strip() for line in raw_text.splitlines() if line.strip()]
+@app.route('/api/broadcast', methods=['POST'])
+def api_broadcast():
+    clean_expired_jobs()
     
-    if not target_urls:
-        return render_template_string(HTML_UI, logs="[-] No URLs provided.")
+    provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
+    if provided_key != ADMIN_API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
 
-    log_output = f"[+] Processing {len(target_urls)} target URLs...\n"
-    
-    # 1. Build local files
-    build_bridge_assets(target_urls)
-    log_output += "[+] Generated local index.html & feed.xml with Job Schemas.\n"
-    
-    # 2. Trigger Google Indexing API
-    hub_url = f"{SITE_URL}/index.html"
-    log_output += trigger_google_indexing(hub_url) + "\n"
-    
-    # 3. Trigger IndexNow
-    bridge_urls = [hub_url, f"{SITE_URL}/feed.xml"] + target_urls
-    log_output += trigger_indexnow(bridge_urls) + "\n"
-    
-    # 4. Cloudflare Deploy Hook check
-    if CLOUDFLARE_DEPLOY_HOOK:
-        try:
-            cf_res = requests.post(CLOUDFLARE_DEPLOY_HOOK, timeout=10)
-            if cf_res.status_code == 200:
-                log_output += "[+] Cloudflare Pages auto-deploy triggered successfully!\n"
-            else:
-                log_output += f"[-] Cloudflare deploy hook warning: Status {cf_res.status_code}\n"
-        except Exception as cf_e:
-            log_output += f"[-] Cloudflare Exception: {cf_e}\n"
-    else:
-        log_output += "\n[✔] Pipeline complete!"
+    data = request.get_json(silent=True) or request.form
+    target_url = data.get('target_url')
+    if not target_url:
+        return jsonify({"error": "target_url required"}), 400
 
-    return render_template_string(HTML_UI, logs=log_output)
+    title = data.get('title') or fetch_or_generate_title(target_url)
+    location = data.get('location') or random.choice(JOB_LOCATIONS)
+    salary = data.get('salary') or random.choice(SALARY_RANGES)
+    
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') + f"-{int(time.time())}"
+    
+    new_job = {
+        "id": f"job-{int(time.time())}",
+        "title": title,
+        "target_url": target_url,
+        "location": location,
+        "salary": salary,
+        "slug": slug,
+        "created_at": time.time()
+    }
+    jobs_db.insert(0, new_job)
 
-@app.route('/gateway/<path:target_slug>')
-def dynamic_gateway(target_slug):
-    target_url = unquote(target_slug)
-    if not target_url.startswith('http://') and not target_url.startswith('https://'):
-        target_url = 'https://' + target_url
-    return render_template('bridge.html', target_url=target_url)
+    # Trigger background WebSub / PubSubHubbub notification ping to Google
+    try:
+        requests.post("https://pubsubhubbub.appspot.com/", data={
+            "hub.mode": "publish",
+            "hub.url": "https://hiredfast.online/feed.xml"
+        }, timeout=2)
+    except Exception:
+        pass
 
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    return jsonify({
+        "status": "success",
+        "generated_title": title,
+        "job_url": f"https://hiredfast.online/jobs/{slug}",
+        "target_url": target_url
+    }), 200
+
+@app.route('/jobs/<slug>')
+def job_page(slug):
+    clean_expired_jobs()
+    job = next((j for j in jobs_db if j['slug'] == slug), None)
+    if not job:
+        abort(410)
+    return render_template_string(JOB_PAGE_TEMPLATE, job=job)
+
+@app.route('/feed.xml')
+def rss_feed():
+    clean_expired_jobs()
+    items_xml = ""
+    for j in jobs_db:
+        items_xml += f"""
+        <item>
+            <title>{j['title']}</title>
+            <link>{j['target_url']}</link>
+        </item>"""
+    
+    # RSS Feed with WebSub link header included for instant Google indexing alerts
+    rss_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+        <channel>
+            <title>HiredFast Career Feed</title>
+            <link>https://hiredfast.online</link>
+            {items_xml}
+        </channel>
+    </rss>"""
+    
+    headers = {
+        'Content-Type': 'application/xml',
+        'Link': '<https://pubsubhubbub.appspot.com/>; rel="hub", <https://hiredfast.online/feed.xml>; rel="self"'
+    }
+    return rss_content, 200, headers

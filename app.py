@@ -1,227 +1,107 @@
-from flask import Flask, render_template_string, request, jsonify, abort
-from html.parser import HTMLParser
-import json, re, time, random, requests
+import os
+import re
+import time
+import random
+import threading
+import requests
+import xml.etree.ElementTree as ET
+from flask import Flask, request, jsonify, render_template_string, Response
 
 app = Flask(__name__)
 
-EXPIRY_SECONDS = 3 * 3600  # 3 Hours TTL
+# --- CONFIGURATION & CREDENTIALS ---
 ADMIN_API_KEY = "hf_secret_key_98234729"
+INDEXNOW_KEY = "hf_indexnow_key_778899"
+DOMAIN = "hiredfast.online"
+BASE_URL = f"https://{DOMAIN}"
+GOOGLE_SERVICE_ACCOUNT_KEY_PATH = "google_credentials.json"
 
+# In-memory store (Retains posts for active crawl rotation)
 jobs_db = []
 
-JOB_PREFIXES = ["Senior", "Lead", "Associate", "Principal", "Remote", "Global"]
-JOB_ROLES = [
-    "Operations Specialist", "Digital Marketing Specialist", "Systems Analyst",
-    "Customer Success Manager", "Technical Project Coordinator", "Data Analyst",
-    "Content Strategist", "Business Development Executive", "Software Engineer"
+JOB_LOCATIONS = ["Remote", "New York, NY", "Austin, TX", "London, UK", "San Francisco, CA"]
+SALARY_RANGES = ["$90,000 - $120,000", "$130,000 - $160,000", "$170,000 - $210,000"]
+
+# User-Agent list for Tier 7 (Emulated User-Triggered Crawlers)
+EMULATED_FETCHERS = [
+    "Mozilla/5.0 (compatible; Google-InspectionTool/1.0; +http://www.google.com/bot.html)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Chrome-Lighthouse",
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "Twitterbot/1.0"
 ]
-JOB_LOCATIONS = ["Remote", "Hybrid - New York", "Remote - US", "Hybrid - London", "Remote - Canada"]
-SALARY_RANGES = ["$55,000 - $70,000 / year", "$65,000 - $85,000 / year", "$80,000 - $105,000 / year"]
 
-class MetaTitleExtractor(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.og_title = None
-        self.in_title = False
-        self.html_title = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        if tag == 'meta':
-            if attrs_dict.get('property') == 'og:title' or attrs_dict.get('name') == 'og:title':
-                self.og_title = attrs_dict.get('content')
-        elif tag == 'title':
-            self.in_title = True
-
-    def handle_endtag(self, tag):
-        if tag == 'title':
-            self.in_title = False
-
-    def handle_data(self, data):
-        if self.in_title and not self.html_title:
-            self.html_title = data.strip()
+# --- HELPER FUNCTIONS ---
+def generate_synthetic_job_title(target_url):
+    """Generates a clean synthetic job title based on target domain to pass schema validation."""
+    target = target_url.lower()
+    if "spotify" in target:
+        return "Audio Systems & Media Streaming Engineer"
+    elif "instagram" in target:
+        return "Visual Media & Audience Operations Manager"
+    elif "synology" in target:
+        return "Network Attached Storage & Data Specialist"
+    elif "wokwi" in target:
+        return "Embedded Systems & Hardware Simulation Developer"
+    return "Senior Infrastructure & Cloud Systems Architect"
 
 def clean_expired_jobs():
-    current_time = time.time()
+    """Removes posts older than 7 days to maintain dynamic link budget."""
     global jobs_db
-    jobs_db = [j for j in jobs_db if (current_time - j['created_at']) < EXPIRY_SECONDS]
+    seven_days_ago = time.time() - (7 * 86400)
+    jobs_db = [j for j in jobs_db if j['created_at'] > seven_days_ago]
 
-def generate_synthetic_job_title(url):
-    slug_part = url.rstrip('/').split('/')[-1]
-    clean_words = re.sub(r'[^a-zA-Z0-9]+', ' ', slug_part).title().strip()
-    if len(clean_words) > 3 and not clean_words.isnumeric():
-        prefix = random.choice(["Hiring:", "Urgent Opening:", "Remote Role:"])
-        return f"{prefix} {clean_words} Specialist"
-    return f"{random.choice(JOB_PREFIXES)} {random.choice(JOB_ROLES)}"
-
-def fetch_or_generate_title(url):
+def get_google_access_token():
+    """Fetches OAuth2 token for Google Indexing API."""
+    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_KEY_PATH):
+        return None
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
-        if response.status_code == 200:
-            parser = MetaTitleExtractor()
-            parser.feed(response.text)
-            if parser.og_title:
-                return parser.og_title.strip()
-            if parser.html_title and len(parser.html_title) > 5:
-                return parser.html_title
+        from google.oauth2 import service_account
+        import google.auth.transport.requests
+        scopes = ["https://www.googleapis.com/auth/indexing"]
+        creds = service_account.Credentials.from_service_account_file(
+            GOOGLE_SERVICE_ACCOUNT_KEY_PATH, scopes=scopes
+        )
+        auth_req = google.auth.transport.requests.Request()
+        creds.refresh(auth_req)
+        return creds.token
     except Exception:
-        pass
-    return generate_synthetic_job_title(url)
+        return None
 
-HOME_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>HiredFast - Active Career Opportunities</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: system-ui, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 2rem; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: white; padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #e2e8f0; }
-        .badge { background: #e0f2fe; color: #0369a1; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; }
-        a.btn { display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 8px 16px; border-radius: 6px; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Latest Open Positions</h1>
-        {% if jobs %}
-            {% for job in jobs %}
-            <div class="card">
-                <span class="badge">{{ job.location }}</span>
-                <h2>{{ job.title }}</h2>
-                <p><strong>Compensation:</strong> {{ job.salary }}</p>
-                <a class="btn" href="{{ job.target_url }}" target="_blank">View Listing & Apply &rarr;</a>
-            </div>
-            {% endfor %}
-        {% else %}
-            <p>No active openings at this moment.</p>
-        {% endif %}
-    </div>
-</body>
-</html>
-"""
-
-JOB_PAGE_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>{{ job.title }} - HiredFast Careers</title>
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org/",
-      "@type": "JobPosting",
-      "title": "{{ job.title }}",
-      "jobLocation": {
-        "@type": "Place",
-        "address": {
-          "@type": "PostalAddress",
-          "addressLocality": "{{ job.location }}"
-        }
-      },
-      "baseSalary": {
-        "@type": "MonetaryAmount",
-        "currency": "USD",
-        "value": "{{ job.salary }}"
-      }
-    }
-    </script>
-</head>
-<body>
-    <h1>{{ job.title }}</h1>
-    <p>Location: {{ job.location }}</p>
-    <p>Compensation: {{ job.salary }}</p>
-    <a href="{{ job.target_url }}">Apply on Partner Site</a>
-</body>
-</html>
-"""
-
-@app.route('/')
-def home():
-    clean_expired_jobs()
-    return render_template_string(HOME_TEMPLATE, jobs=jobs_db)
-
-@app.route('/robots.txt')
-def robots():
-    content = "User-agent: *\nAllow: /\nSitemap: https://hiredfast.online/feed.xml"
-    return content, 200, {'Content-Type': 'text/plain'}
-
-@app.route('/api/broadcast', methods=['POST'])
-def api_broadcast():
-    clean_expired_jobs()
+# --- BACKGROUND BROADCAST ENGINE (TIERS 1-7) ---
+def run_full_broadcast_pipeline(job_url):
+    """Executes the full 7-tier asynchronous discovery pipeline."""
     
-    provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
-    if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+    # Tier 1: Google Indexing API (Official Direct Push)
+    token = get_google_access_token()
+    if token:
+        try:
+            requests.post(
+                "https://indexing.googleapis.com/v3/urlNotifications:publish",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"url": job_url, "type": "URL_UPDATED"},
+                timeout=3
+            )
+        except Exception: pass
 
-    data = request.get_json(silent=True) or request.form
-    target_url = data.get('target_url')
-    if not target_url:
-        return jsonify({"error": "target_url required"}), 400
+    # Tier 2: Bing / IndexNow
+    try:
+        requests.post("https://api.indexnow.org/indexnow", json={
+            "host": DOMAIN,
+            "key": INDEXNOW_KEY,
+            "keyLocation": f"{BASE_URL}/{INDEXNOW_KEY}.txt",
+            "urlList": [job_url]
+        }, timeout=3)
+    except Exception: pass
 
-    title = data.get('title') or fetch_or_generate_title(target_url)
-    location = data.get('location') or random.choice(JOB_LOCATIONS)
-    salary = data.get('salary') or random.choice(SALARY_RANGES)
-    
-    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') + f"-{int(time.time())}"
-    
-    new_job = {
-        "id": f"job-{int(time.time())}",
-        "title": title,
-        "target_url": target_url,
-        "location": location,
-        "salary": salary,
-        "slug": slug,
-        "created_at": time.time()
-    }
-    jobs_db.insert(0, new_job)
-
+    # Tier 3: WebSub (PubSubHubbub)
     try:
         requests.post("https://pubsubhubbub.appspot.com/", data={
             "hub.mode": "publish",
-            "hub.url": "https://hiredfast.online/feed.xml"
-        }, timeout=2)
-    except Exception:
-        pass
+            "hub.url": f"{BASE_URL}/feed.xml"
+        }, timeout=3)
+    except Exception: pass
 
-    return jsonify({
-        "status": "success",
-        "generated_title": title,
-        "job_url": f"https://hiredfast.online/jobs/{slug}",
-        "target_url": target_url
-    }), 200
-
-@app.route('/jobs/<slug>')
-def job_page(slug):
-    clean_expired_jobs()
-    job = next((j for j in jobs_db if j['slug'] == slug), None)
-    if not job:
-        abort(410)
-    return render_template_string(JOB_PAGE_TEMPLATE, job=job)
-
-@app.route('/feed.xml')
-def rss_feed():
-    clean_expired_jobs()
-    items_xml = ""
-    for j in jobs_db:
-        items_xml += f"""
-        <item>
-            <title>{j['title']}</title>
-            <link>{j['target_url']}</link>
-        </item>"""
-    
-    rss_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <rss version="2.0">
-        <channel>
-            <title>HiredFast Career Feed</title>
-            <link>https://hiredfast.online</link>
-            {items_xml}
-        </channel>
-    </rss>"""
-    
-    headers = {
-        'Content-Type': 'application/xml',
-        'Link': '<https://pubsubhubbub.appspot.com/>; rel="hub", <https://hiredfast.online/feed.xml>; rel="self"'
-    }
-    return rss_content, 200, headers
+    # Tier 4: Sitemap & XML-RPC Pings
+    try:
+        sitemap_url = f"{BASE_URL}/sitemap.xml"
+        requests.get(f"https://www.google.com/ping?sitemap={sitemap_url}", timeout=

@@ -58,14 +58,35 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_gemini_sdk(prompt_text):
-    """Uses the official google-generativeai SDK to prevent any manual REST URL path 404 errors."""
+    """Dynamically discovers and uses models authorized for your specific API key."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    # Use the reliable flash model via the official SDK
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content(prompt_text)
-    return response.text.strip()
+    # Automatically query Google for models supported by your specific API key
+    supported_models = []
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                supported_models.append(m.name)
+    except Exception:
+        pass
+        
+    # Fallback list if discovery fails
+    if not supported_models:
+        supported_models = ['models/gemini-1.5-flash', 'models/gemini-pro', 'gemini-1.5-flash', 'gemini-pro']
+        
+    last_exception = None
+    for model_name in supported_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt_text)
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            last_exception = e
+            continue
+            
+    raise Exception(f"All Gemini models failed for this API key. Last error: {last_exception}")
 
 def fetch_and_publish_rss_articles():
     """Ingests RSS feeds, translates/spins items via official Gemini SDK into Japanese articles, and auto-publishes."""
@@ -544,12 +565,12 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     fetch_and_publish_rss_articles()
     return jsonify({
         "status": "success",
-        "message": "RSS feeds ingested, translated via Gemini SDK, and auto-published to japaan.net!",
+        "message": "RSS feeds ingested, translated via dynamic Gemini SDK discovery, and auto-published to japaan.net!",
         "total_articles": len(japaan_db)
     }), 200
 
@@ -560,12 +581,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}), 400
+        return jsonify({"error": "target_url is required"}}, 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)

@@ -84,8 +84,8 @@ def fetch_and_publish_rss_articles():
                 Line 2 onwards: Body text in Japanese.
                 """
                 
-                # Clean initialization using gemini-1.5-flash
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                # Using gemini-pro for stable universal SDK compatibility
+                model = genai.GenerativeModel('gemini-pro')
                 response = model.generate_content(prompt)
                 content = response.text.strip()
                 

@@ -7,6 +7,7 @@ import requests
 import feedparser
 import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, render_template_string, Response
+import google.generativeai as genai
 
 app = Flask(__name__)
 
@@ -23,6 +24,10 @@ JAPAAN_BASE_URL = f"https://{JAPAAN_DOMAIN}"
 GOOGLE_SERVICE_ACCOUNT_KEY_PATH = "google_credentials.json"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Initialize official Gemini SDK
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 # In-memory stores
 jobs_db = []      # Stores hiredfast.online JobPosting entries
 japaan_db = []    # Stores japaan.net NewsArticle entries
@@ -30,7 +35,7 @@ japaan_db = []    # Stores japaan.net NewsArticle entries
 JOB_LOCATIONS = ["Remote", "New York, NY", "Austin, TX", "London, UK", "San Francisco, CA"]
 SALARY_RANGES = ["$90,000 - $120,000", "$130,000 - $160,000", "$170,000 - $210,000"]
 
-# 100% active, permanent Japanese and global RSS feeds
+# Active RSS feeds
 RSS_FEEDS = [
     {"url": "https://www.nhk.or.jp/rss/news/cat0.xml", "category": "Tech"},
     {"url": "https://gigazine.net/news/rss_2.0/", "category": "Tech"},
@@ -52,31 +57,18 @@ def generate_synthetic_job_title(target_url):
         return "Embedded Systems & Hardware Simulation Developer"
     return "Senior Infrastructure & Cloud Systems Architect"
 
-def call_gemini_rest_api(prompt_text):
-    """Direct REST call to Gemini 1.5 Flash using the verified v1beta models endpoint path."""
+def call_gemini_sdk(prompt_text):
+    """Uses the official google-generativeai SDK to prevent any manual REST URL path 404 errors."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt_text}]
-        }]
-    }
-    
-    resp = requests.post(url, headers=headers, json=payload, timeout=15)
-    if resp.status_code != 200:
-        raise Exception(f"Gemini API Error [{resp.status_code}]: {resp.text}")
-    
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError) as e:
-        raise Exception(f"Unexpected Gemini response structure: {data}")
+    # Use the reliable flash model via the official SDK
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content(prompt_text)
+    return response.text.strip()
 
 def fetch_and_publish_rss_articles():
-    """Ingests active RSS feeds, translates/spins items via direct Gemini REST API into Japanese articles, and auto-publishes."""
+    """Ingests RSS feeds, translates/spins items via official Gemini SDK into Japanese articles, and auto-publishes."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:
@@ -104,7 +96,7 @@ def fetch_and_publish_rss_articles():
                 Line 2 onwards: Body text in Japanese.
                 """
                 
-                content = call_gemini_rest_api(prompt)
+                content = call_gemini_sdk(prompt)
                 
                 parts = content.split("\n", 1)
                 title_jp = parts[0].replace("#", "").strip()
@@ -557,7 +549,7 @@ def cron_fetch_rss():
     fetch_and_publish_rss_articles()
     return jsonify({
         "status": "success",
-        "message": "RSS feeds ingested, translated via Gemini REST API, and auto-published to japaan.net!",
+        "message": "RSS feeds ingested, translated via Gemini SDK, and auto-published to japaan.net!",
         "total_articles": len(japaan_db)
     }), 200
 

@@ -87,7 +87,7 @@ def call_gemini_sdk(prompt_text):
     raise Exception(f"All Gemini models failed for this API key. Last error: {last_exception}")
 
 def fetch_and_publish_rss_articles():
-    """Ingests RSS feeds, translates/spins items via official Gemini SDK into Japanese articles, and auto-publishes."""
+    """Ingests RSS feeds, translates/spins items via official Gemini SDK into clean Japanese articles, and auto-publishes."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:
@@ -104,25 +104,34 @@ def fetch_and_publish_rss_articles():
                 if any(article.get('source_rss_link') == target_url for article in japaan_db):
                     continue
 
-                prompt = f"""
-                Translate and rewrite the following {category} news story into a professional, engaging 3-paragraph Japanese news report.
-                Category: {category}
-                Title: {original_title}
-                Summary: {original_summary}
-                
-                Format requirement:
-                Line 1: Japanese Headline starting with 【{category}速報】
-                Line 2 onwards: Body text in Japanese.
-                """
+                # STRICT PROMPT INSTRUCTIONS TO AVOID META-TEXT
+                prompt = f"""You are a professional Japanese news editor. Rewrite and translate the following news item into natural Japanese.
+Output ONLY the final article text in this exact format, with NO conversational filler, NO notes, and NO metadata:
+
+Line 1: 【{category}速報】(Catchy Japanese Headline)
+Line 2 onwards: (3 clean paragraphs of news reporting body text in Japanese)
+
+Category: {category}
+Title: {original_title}
+Summary: {original_summary}"""
                 
                 content = call_gemini_sdk(prompt)
+                
+                # Clean up any potential code block markers
+                content = content.replace("```html", "").replace("```markdown", "").replace("```", "").strip()
                 
                 parts = content.split("\n", 1)
                 title_jp = parts[0].replace("#", "").strip()
                 body_jp = parts[1].strip() if len(parts) > 1 else "最新のニュース・技術動向に関する詳細リポートです。"
                 
                 timestamp = int(time.time())
-                jp_slug = f"{category.lower()}-" + re.sub(r'[^a-z0-9]+', '-', original_title.lower()).strip('-')[:25] + f"-{timestamp}"
+                
+                # Clean slug generator to prevent empty or double-dash URLs
+                slug_base = re.sub(r'[^a-zA-Z0-9]+', '-', original_title.lower()).strip('-')
+                if not slug_base:
+                    slug_base = "news-report"
+                jp_slug = f"{category.lower()}-{slug_base[:25].strip('-')}-{timestamp}"
+                
                 japaan_url = f"{JAPAAN_BASE_URL}/news/{jp_slug}"
 
                 japaan_db.insert(0, {
@@ -154,7 +163,7 @@ def get_google_access_token():
     try:
         from google.oauth2 import service_account
         import google.auth.transport.requests
-        scopes = ["https://www.googleapis.com/auth/indexing"]
+        scopes = ["[https://www.googleapis.com/auth/indexing](https://www.googleapis.com/auth/indexing)"]
         creds = service_account.Credentials.from_service_account_file(
             GOOGLE_SERVICE_ACCOUNT_KEY_PATH, scopes=scopes
         )
@@ -170,7 +179,7 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
     if token and job_url:
         try:
             requests.post(
-                "https://indexing.googleapis.com/v3/urlNotifications:publish",
+                "[https://indexing.googleapis.com/v3/urlNotifications:publish](https://indexing.googleapis.com/v3/urlNotifications:publish)",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={"url": job_url, "type": "URL_UPDATED"},
                 timeout=3
@@ -183,7 +192,7 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
 
     if urls_to_index:
         try:
-            requests.post("https://api.indexnow.org/indexnow", json={
+            requests.post("[https://api.indexnow.org/indexnow](https://api.indexnow.org/indexnow)", json={
                 "host": HIREDFAST_DOMAIN,
                 "key": INDEXNOW_KEY,
                 "keyLocation": f"{HIREDFAST_BASE_URL}/{INDEXNOW_KEY}.txt",
@@ -192,7 +201,7 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
         except Exception: pass
 
     try:
-        requests.post("https://pubsubhubbub.appspot.com/", data={
+        requests.post("[https://pubsubhubbub.appspot.com/](https://pubsubhubbub.appspot.com/)", data={
             "hub.mode": "publish",
             "hub.url": f"{HIREDFAST_BASE_URL}/feed.xml"
         }, timeout=3)
@@ -423,7 +432,7 @@ def job_page(slug):
         <title>{{ job.title }} - Application Portal</title>
         <script type="application/ld+json">
         {
-          "@context": "https://schema.org/",
+          "@context": "[https://schema.org/](https://schema.org/)",
           "@type": "JobPosting",
           "title": "{{ job.title }}",
           "description": "Full specifications and documentation hosted on the primary verification platform.",
@@ -475,7 +484,7 @@ def japaan_news_page(slug):
         <title>{{ article.title_jp }} - Japaan News</title>
         <script type="application/ld+json">
         {
-          "@context": "https://schema.org",
+          "@context": "[https://schema.org](https://schema.org)",
           "@type": "NewsArticle",
           "headline": "{{ article.title_jp }}",
           "articleSection": "{{ article.category }}",
@@ -541,7 +550,7 @@ def japaan_news_page(slug):
 @app.route('/sitemap.xml')
 def sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    urlset = ET.Element("urlset", xmlns="[http://www.sitemaps.org/schemas/sitemap/0.9](http://www.sitemaps.org/schemas/sitemap/0.9)")
     url_elm = ET.SubElement(urlset, "url")
     ET.SubElement(url_elm, "loc").text = HIREDFAST_BASE_URL
     for job in jobs_db:
@@ -552,25 +561,24 @@ def sitemap():
 @app.route('/news-sitemap.xml')
 def news_sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    urlset = ET.Element("urlset", xmlns="[http://www.sitemaps.org/schemas/sitemap/0.9](http://www.sitemaps.org/schemas/sitemap/0.9)")
     for article in japaan_db:
         u = ET.SubElement(urlset, "url")
         ET.SubElement(u, "loc").text = f"{JAPAAN_BASE_URL}/news/{article['slug']}"
     return Response(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(urlset, encoding='utf-8', method='xml'), mimetype='text/xml')
 
-# CRON ENDPOINT FOR AUTOMATED RSS FETCHING (NOW ASYNCHRONOUS)
+# CRON ENDPOINT FOR AUTOMATED RSS FETCHING (ASYNCHRONOUS)
 @app.route('/api/cron-fetch-rss', methods=['GET', 'POST'])
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
-    # Spin off the heavy lifting into a background thread so cron-job.org gets an instant 200 OK
     threading.Thread(target=fetch_and_publish_rss_articles).start()
 
     return jsonify({
         "status": "success",
-        "message": "Cron job accepted! RSS fetching and Gemini translation dispatched in the background."
+        "message": "Cron job accepted! Clean RSS fetching and Gemini translation dispatched in the background."
     }), 200
 
 # UNIFIED BROADCAST ENDPOINT (HiredFast Target Submission)
@@ -580,12 +588,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}), 400
+        return jsonify({"error": "target_url is required"}}, 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)
@@ -599,7 +607,7 @@ def api_broadcast():
         "location": random.choice(JOB_LOCATIONS),
         "salary": random.choice(SALARY_RANGES),
         "slug": job_slug,
-        "created_at": time.time()
+        "created_at": time.sleep(0) or time.time()
     })
 
     threading.Thread(target=run_full_broadcast_pipeline, args=(job_url, None)).start()

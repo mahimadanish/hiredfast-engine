@@ -53,11 +53,12 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_gemini_rest_api(prompt_text):
-    """Direct REST call to Gemini 1.5 Flash bypassing SDK routing bugs."""
+    """Direct REST call to Gemini 1.5 Flash using the correct endpoint path."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # Corrected endpoint path (without redundant 'models/' prefix in URL)
+    url = f"https://generativelanguage.googleapis.com/v1beta/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{
@@ -552,7 +553,7 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     fetch_and_publish_rss_articles()
     return jsonify({
@@ -568,12 +569,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}), 400
+        return jsonify({"error": "target_url is required"}}, 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)

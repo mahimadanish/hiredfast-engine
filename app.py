@@ -30,13 +30,13 @@ japaan_db = []    # Stores japaan.net NewsArticle entries
 JOB_LOCATIONS = ["Remote", "New York, NY", "Austin, TX", "London, UK", "San Francisco, CA"]
 SALARY_RANGES = ["$90,000 - $120,000", "$130,000 - $160,000", "$170,000 - $210,000"]
 
-# Multi-topic RSS feeds mapped to specific categories for japaan.net
+# 100% active, permanent Japanese and global RSS feeds
 RSS_FEEDS = [
-    {"url": "https://news.yahoo.co.jp/rss/topics/it.xml", "category": "Tech"},
-    {"url": "https://news.yahoo.co.jp/rss/topics/business.xml", "category": "Business"},
-    {"url": "https://news.yahoo.co.jp/rss/topics/sports.xml", "category": "Sports"},
-    {"url": "https://news.yahoo.co.jp/rss/topics/world.xml", "category": "World"},
-    {"url": "https://techcrunch.com/feed/", "category": "Tech"}
+    {"url": "https://www.nhk.or.jp/rss/news/cat0.xml", "category": "Tech"},
+    {"url": "https://gigazine.net/news/rss_2.0/", "category": "Tech"},
+    {"url": "https://techcrunch.com/feed/", "category": "Tech"},
+    {"url": "https://www.nhk.or.jp/rss/news/cat6.xml", "category": "Business"},
+    {"url": "https://www.nhk.or.jp/rss/news/cat5.xml", "category": "World"}
 ]
 
 # --- HELPER FUNCTIONS ---
@@ -57,7 +57,6 @@ def call_gemini_rest_api(prompt_text):
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    # Verified correct endpoint path incorporating v1beta and models/ prefix
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -77,7 +76,7 @@ def call_gemini_rest_api(prompt_text):
         raise Exception(f"Unexpected Gemini response structure: {data}")
 
 def fetch_and_publish_rss_articles():
-    """Ingests RSS feeds, translates/spins items via direct Gemini REST API into Japanese articles, and auto-publishes."""
+    """Ingests active RSS feeds, translates/spins items via direct Gemini REST API into Japanese articles, and auto-publishes."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:

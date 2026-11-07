@@ -1,6 +1,6 @@
 flask
 requests
 feedparser
-openai
+google-generativeai
 google-auth
 gunicorn

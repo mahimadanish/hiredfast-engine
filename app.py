@@ -5,7 +5,7 @@ import random
 import threading
 import requests
 import feedparser
-import openai
+import google.generativeai as genai
 import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, render_template_string, Response
 
@@ -22,7 +22,9 @@ JAPAAN_DOMAIN = "japaan.net"
 JAPAAN_BASE_URL = f"https://{JAPAAN_DOMAIN}"
 
 GOOGLE_SERVICE_ACCOUNT_KEY_PATH = "google_credentials.json"
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# Configure Free Google Gemini API
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # In-memory stores
 jobs_db = []      # Stores hiredfast.online JobPosting entries
@@ -61,7 +63,7 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def fetch_and_publish_rss_articles():
-    """Ingests RSS feeds, translates/spins items via OpenAI into unique Japanese articles, and auto-publishes."""
+    """Ingests RSS feeds, translates/spins items via Gemini into unique Japanese articles, and auto-publishes."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:
@@ -79,7 +81,7 @@ def fetch_and_publish_rss_articles():
                     continue
 
                 prompt = f"""
-                Translate and rewrite the following {category} news story into a professional, unique 3-paragraph Japanese news report.
+                Translate and rewrite the following {category} news story into a professional, engaging 3-paragraph Japanese news report.
                 Category: {category}
                 Title: {original_title}
                 Summary: {original_summary}
@@ -89,13 +91,10 @@ def fetch_and_publish_rss_articles():
                 Line 2 onwards: Body text in Japanese.
                 """
                 
-                response = openai.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7
-                )
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt)
+                content = response.text.strip()
                 
-                content = response.choices[0].message.content.strip()
                 parts = content.split("\n", 1)
                 title_jp = parts[0].replace("#", "").strip()
                 body_jp = parts[1].strip() if len(parts) > 1 else "最新のニュース・技術動向に関する詳細リポートです。"
@@ -145,7 +144,6 @@ def get_google_access_token():
 
 # --- BACKGROUND BROADCAST ENGINE ---
 def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
-    # Tier 1: Google Indexing API
     token = get_google_access_token()
     if token and job_url:
         try:
@@ -157,7 +155,6 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
             )
         except Exception: pass
 
-    # Tier 2: Bing / IndexNow
     urls_to_index = []
     if job_url: urls_to_index.append(job_url)
     if japaan_url: urls_to_index.append(japaan_url)
@@ -172,48 +169,12 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
             }, timeout=3)
         except Exception: pass
 
-    # Tier 3: WebSub
     try:
         requests.post("https://pubsubhubbub.appspot.com/", data={
             "hub.mode": "publish",
             "hub.url": f"{HIREDFAST_BASE_URL}/feed.xml"
         }, timeout=3)
     except Exception: pass
-
-    # Tier 4: Sitemap & XML-RPC Pings
-    try:
-        if job_url:
-            sitemap_url = f"{HIREDFAST_BASE_URL}/sitemap.xml"
-            requests.get(f"https://www.google.com/ping?sitemap={sitemap_url}", timeout=3)
-            requests.get(f"https://www.bing.com/ping?sitemap={sitemap_url}", timeout=3)
-
-        if japaan_url:
-            japaan_sitemap = f"{JAPAAN_BASE_URL}/news-sitemap.xml"
-            requests.get(f"https://www.google.com/ping?sitemap={japaan_sitemap}", timeout=3)
-
-        ping_xml = f"""<?xml version="1.0"?>
-        <methodCall>
-            <methodName>weblogUpdates.ping</methodName>
-            <params>
-                <param><value><string>HiredFast Careers</string></value></param>
-                <param><value><string>{HIREDFAST_BASE_URL}</string></value></param>
-            </params>
-        </methodCall>"""
-        requests.post("https://rpc.pingomatic.com/", data=ping_xml, headers={"Content-Type": "text/xml"}, timeout=3)
-    except Exception: pass
-
-    # Tier 5: Wayback Machine Snapshot
-    if job_url:
-        try:
-            requests.get(f"https://web.archive.org/save/{job_url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
-        except Exception: pass
-
-    # Tier 6 & 7: Emulated Fetchers
-    for ua in EMULATED_FETCHERS:
-        try:
-            if job_url: requests.get(job_url, headers={"User-Agent": ua}, timeout=3)
-            if japaan_url: requests.get(japaan_url, headers={"User-Agent": ua}, timeout=3)
-        except Exception: pass
 
 
 # --- ROUTING & DOMAIN DISPATCHING ---
@@ -234,27 +195,85 @@ def homepage():
         <html lang="ja">
         <head>
             <meta charset="UTF-8">
-            <title>Japaan Tech News & Media Network</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Japaan.net - 最新テクノロジー・ニュース速報</title>
+            <style>
+                :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
+                * { box-sizing: border-box; margin: 0; padding: 0; }
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.7; }
+                header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+                .nav-container { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; flex-wrap: wrap; gap: 10px; }
+                .logo { font-size: 24px; font-weight: 800; color: var(--primary); text-decoration: none; letter-spacing: -0.5px; }
+                .logo span { color: var(--accent); }
+                nav a { margin-left: 20px; text-decoration: none; color: var(--text); font-weight: 600; font-size: 15px; transition: color 0.2s; }
+                nav a:hover, nav a.active { color: var(--accent); }
+                .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
+                .hero { background: linear-gradient(135deg, #1e293b, #0f172a); color: white; padding: 40px; border-radius: 12px; margin-bottom: 35px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
+                .hero span.badge { background: var(--accent); color: white; padding: 4px 10px; font-size: 12px; border-radius: 20px; font-weight: 600; text-transform: uppercase; }
+                .hero h1 { font-size: 28px; margin-top: 15px; line-height: 1.4; }
+                .hero p { margin-top: 10px; color: #94a3b8; font-size: 15px; }
+                .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+                .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s, box-shadow 0.2s; display: flex; flex-direction: column; justify-content: space-between; }
+                .card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.08); }
+                .card-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+                .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; }
+                .card h3 a { color: var(--primary); text-decoration: none; font-size: 18px; line-height: 1.5; transition: color 0.2s; }
+                .card h3 a:hover { color: var(--accent); }
+                .empty-state { text-align: center; padding: 60px 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
+                .empty-state h3 { color: var(--primary); margin-bottom: 10px; }
+                footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
+                @media(max-width: 768px) { .hero { padding: 25px; } .hero h1 { font-size: 22px; } }
+            </style>
         </head>
-        <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6;">
-            <nav style="margin-bottom: 20px; background: #f0f0f0; padding: 10px; border-radius: 4px;">
-                <a href="/" style="margin-right: 15px; font-weight: bold;">Top</a>
-                <a href="/category/tech" style="margin-right: 15px;">Tech</a>
-                <a href="/category/business" style="margin-right: 15px;">Business</a>
-                <a href="/category/sports" style="margin-right: 15px;">Sports</a>
-                <a href="/category/world">World</a>
-            </nav>
-            <h1>最新テクノロジー・ニュース速報</h1>
-            <p>Japaan 編集部による自動収集・翻訳ニュースフィード:</p>
-            <hr>
-            <ul>
-                {% for article in articles %}
-                <li style="margin-bottom: 12px;">
-                    <span style="background: #0066cc; color: #fff; padding: 2px 6px; font-size: 11px; border-radius: 3px; margin-right: 6px;">{{ article.category }}</span>
-                    <a href="/news/{{ article.slug }}"><strong>{{ article.title_jp }}</strong></a>
-                </li>
-                {% endfor %}
-            </ul>
+        <body>
+            <header>
+                <div class="nav-container">
+                    <a href="/" class="logo">JAPAAN<span>.NET</span></a>
+                    <nav>
+                        <a href="/" class="active">トップ</a>
+                        <a href="/category/tech">Tech</a>
+                        <a href="/category/business">Business</a>
+                        <a href="/category/sports">Sports</a>
+                        <a href="/category/world">World</a>
+                    </nav>
+                </div>
+            </header>
+
+            <div class="container">
+                {% if articles %}
+                <div class="hero">
+                    <span class="badge">{{ articles[0].category }} 速報</span>
+                    <h1><a href="/news/{{ articles[0].slug }}" style="color: white; text-decoration: none;">{{ articles[0].title_jp }}</a></h1>
+                    <p>最新のAI自動解析・翻訳によるライブ配信ニュースフィードです。</p>
+                </div>
+
+                <h2 style="margin-bottom: 20px; font-size: 22px; color: var(--primary);">最新ニュース一覧</h2>
+                <div class="grid">
+                    {% for article in articles[1:] %}
+                    <div class="card">
+                        <div>
+                            <div class="card-meta">
+                                <span class="cat-tag">{{ article.category }}</span>
+                            </div>
+                            <h3><a href="/news/{{ article.slug }}">{{ article.title_jp }}</a></h3>
+                        </div>
+                        <div style="margin-top: 20px; font-size: 13px; color: #64748b;">
+                            <span>⏱️ 自動生成フィード</span>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="empty-state">
+                    <h3>現在ニュース記事を収集中です</h3>
+                    <p>自動クローン＆翻訳パイプラインが稼働中です。まもなく最新記事が表示されます。</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <footer>
+                <p>&copy; 2026 Japaan.net News Editorial Network. All rights reserved.</p>
+            </footer>
         </body>
         </html>
         """
@@ -266,17 +285,26 @@ def homepage():
     <html lang="en">
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>HiredFast Engineering & Tech Jobs Hub</title>
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+            h1 { color: #111; }
+            ul { list-style: none; padding: 0; }
+            li { background: #fdfdfd; border: 1px solid #e1e4e8; padding: 15px; margin-bottom: 10px; border-radius: 6px; }
+            a { color: #0366d6; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+        </style>
     </head>
-    <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6;">
+    <body>
         <h1>Latest Technical Roles & Application Portals</h1>
         <p>Active positions updated in real-time. Select a job entry to view direct specifications:</p>
         <hr>
         <ul>
             {% for job in jobs %}
-            <li style="margin-bottom: 12px;">
+            <li>
                 <a href="/jobs/{{ job.slug }}"><strong>{{ job.title }}</strong></a> 
-                &mdash; {{ job.location }} ({{ job.salary }})
+                &mdash; <span style="color: #586069;">{{ job.location }} ({{ job.salary }})</span>
             </li>
             {% endfor %}
         </ul>
@@ -296,25 +324,63 @@ def japaan_category_page(cat_name):
     <html lang="ja">
     <head>
         <meta charset="UTF-8">
-        <title>{{ cat_name | capitalize }} News - Japaan Network</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ cat_name | capitalize }} ニュース - Japaan Network</title>
+        <style>
+            :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.7; }
+            header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+            .nav-container { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; flex-wrap: wrap; gap: 10px; }
+            .logo { font-size: 24px; font-weight: 800; color: var(--primary); text-decoration: none; }
+            .logo span { color: var(--accent); }
+            nav a { margin-left: 20px; text-decoration: none; color: var(--text); font-weight: 600; font-size: 15px; }
+            nav a:hover, nav a.active { color: var(--accent); }
+            .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+            .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s; }
+            .card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.08); }
+            .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; display: inline-block; margin-bottom: 12px; }
+            .card h3 a { color: var(--primary); text-decoration: none; font-size: 18px; line-height: 1.5; }
+            .card h3 a:hover { color: var(--accent); }
+            footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
+        </style>
     </head>
-    <body style="font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6;">
-        <nav style="margin-bottom: 20px; background: #f0f0f0; padding: 10px; border-radius: 4px;">
-            <a href="/" style="margin-right: 15px;">Top</a>
-            <a href="/category/tech" style="margin-right: 15px;">Tech</a>
-            <a href="/category/business" style="margin-right: 15px;">Business</a>
-            <a href="/category/sports" style="margin-right: 15px;">Sports</a>
-            <a href="/category/world">World</a>
-        </nav>
-        <h1>{{ cat_name | capitalize }} ニュース一覧</h1>
-        <hr>
-        <ul>
-            {% for article in articles %}
-            <li style="margin-bottom: 12px;">
-                <a href="/news/{{ article.slug }}"><strong>{{ article.title_jp }}</strong></a>
-            </li>
-            {% endfor %}
-        </ul>
+    <body>
+        <header>
+            <div class="nav-container">
+                <a href="/" class="logo">JAPAAN<span>.NET</span></a>
+                <nav>
+                    <a href="/">トップ</a>
+                    <a href="/category/tech" class="{% if cat_name.lower() == 'tech' %}active{% endif %}">Tech</a>
+                    <a href="/category/business" class="{% if cat_name.lower() == 'business' %}active{% endif %}">Business</a>
+                    <a href="/category/sports" class="{% if cat_name.lower() == 'sports' %}active{% endif %}">Sports</a>
+                    <a href="/category/world" class="{% if cat_name.lower() == 'world' %}active{% endif %}">World</a>
+                </nav>
+            </div>
+        </header>
+
+        <div class="container">
+            <h1 style="margin-bottom: 25px; font-size: 26px; color: var(--primary);">{{ cat_name | capitalize }} カテゴリー速報</h1>
+            {% if articles %}
+            <div class="grid">
+                {% for article in articles %}
+                <div class="card">
+                    <span class="cat-tag">{{ article.category }}</span>
+                    <h3><a href="/news/{{ article.slug }}">{{ article.title_jp }}</a></h3>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div style="background: white; padding: 40px; border-radius: 10px; border: 1px solid var(--border); text-align: center;">
+                <p>このカテゴリーにはまだ記事がありません。</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <footer>
+            <p>&copy; 2026 Japaan.net News Editorial Network.</p>
+        </footer>
     </body>
     </html>
     """
@@ -371,7 +437,7 @@ def job_page(slug):
     """
     return render_template_string(html, job=job, base_url=HIREDFAST_BASE_URL)
 
-# JAPAAN.NET NEWS ARTICLE PAGE (With NewsArticle Schema & articleSection)
+# JAPAAN.NET NEWS ARTICLE PAGE (Redesigned & Modern)
 @app.route('/news/<slug>')
 def japaan_news_page(slug):
     article = next((a for a in japaan_db if a['slug'] == slug), None)
@@ -383,7 +449,8 @@ def japaan_news_page(slug):
     <html lang="ja">
     <head>
         <meta charset="UTF-8">
-        <title>{{ article.title_jp }} - Japaan Tech</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ article.title_jp }} - Japaan News</title>
         <script type="application/ld+json">
         {
           "@context": "https://schema.org",
@@ -397,18 +464,54 @@ def japaan_news_page(slug):
           }
         }
         </script>
+        <style>
+            :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.8; }
+            header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+            .nav-container { max-width: 800px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; }
+            .logo { font-size: 22px; font-weight: 800; color: var(--primary); text-decoration: none; }
+            .logo span { color: var(--accent); }
+            .article-container { max-width: 800px; margin: 40px auto; background: var(--card-bg); padding: 40px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); }
+            .meta-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; font-size: 14px; color: #64748b; }
+            .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; }
+            h1 { font-size: 26px; color: var(--primary); line-height: 1.4; margin-bottom: 25px; }
+            .content-body { font-size: 16px; color: #1e293b; white-space: pre-line; margin-bottom: 35px; }
+            .source-box { background: #f8fafc; border: 1px solid var(--border); padding: 20px; border-radius: 8px; border-left: 4px solid var(--accent); }
+            .back-link { display: inline-block; margin-bottom: 20px; color: var(--accent); text-decoration: none; font-weight: 600; }
+            .back-link:hover { text-decoration: underline; }
+            footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
+            @media(max-width: 768px) { .article-container { padding: 20px; margin: 20px; } h1 { font-size: 22px; } }
+        </style>
     </head>
-    <body style="font-family: Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.8;">
-        <p><a href="/" style="color: #666; text-decoration: none;">&larr; トップページに戻る</a> | <span style="background: #eee; padding: 2px 6px; border-radius: 3px;">{{ article.category }}</span></p>
-        <h2>{{ article.title_jp }}</h2>
-        <hr>
-        <p>{{ article.body_jp }}</p>
-        <div style="background: #f9f9f9; padding: 15px; border-left: 4px solid #ff4500; margin-top: 30px;">
-            <p style="margin-top:0; font-weight: bold;">参照・検証元ソース:</p>
-            <a href="{{ article.target_url }}" target="_blank" rel="noopener follow" style="color: #0044cc; font-weight: bold;">
-                {{ article.target_url }}
-            </a>
+    <body>
+        <header>
+            <div class="nav-container">
+                <a href="/" class="logo">JAPAAN<span>.NET</span></a>
+                <a href="/" style="text-decoration: none; color: var(--text); font-weight: 600; font-size: 14px;">&larr; トップに戻る</a>
+            </div>
+        </header>
+
+        <div class="article-container">
+            <div class="meta-bar">
+                <span class="cat-tag">{{ article.category }}</span>
+                <span>Japaan 編集部 AI速報</span>
+            </div>
+            <h1>{{ article.title_jp }}</h1>
+            <hr style="border: none; border-top: 1px solid var(--border); margin-bottom: 25px;">
+            <div class="content-body">{{ article.body_jp }}</div>
+            
+            <div class="source-box">
+                <p style="font-weight: bold; margin-bottom: 5px; color: var(--primary);">参照・検証元ソース (Original Source):</p>
+                <a href="{{ article.target_url }}" target="_blank" rel="noopener follow" style="color: var(--accent); word-break: break-all; font-weight: 500;">
+                    {{ article.target_url }}
+                </a>
+            </div>
         </div>
+
+        <footer>
+            <p>&copy; 2026 Japaan.net News Editorial Network.</p>
+        </footer>
     </body>
     </html>
     """
@@ -445,7 +548,7 @@ def cron_fetch_rss():
     fetch_and_publish_rss_articles()
     return jsonify({
         "status": "success",
-        "message": "RSS feeds ingested, translated, spun, and auto-published to japaan.net!",
+        "message": "RSS feeds ingested, translated via Gemini, and auto-published to japaan.net!",
         "total_articles": len(japaan_db)
     }), 200
 

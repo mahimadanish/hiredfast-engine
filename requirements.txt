@@ -3,3 +3,4 @@ requests
 feedparser
 openai
 google-auth
+gunicorn

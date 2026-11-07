@@ -84,16 +84,10 @@ def fetch_and_publish_rss_articles():
                 Line 2 onwards: Body text in Japanese.
                 """
                 
-                # Initialize model using standard identifier path
-                try:
-                    model = genai.GenerativeModel('models/gemini-1.5-flash')
-                    response = model.generate_content(prompt)
-                    content = response.text.strip()
-                except Exception as e:
-                    print(f"Primary model path failed, falling back to gemini-1.5-flash: {e}")
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    response = model.generate_content(prompt)
-                    content = response.text.strip()
+                # Clean initialization using gemini-1.5-flash
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt)
+                content = response.text.strip()
                 
                 parts = content.split("\n", 1)
                 title_jp = parts[0].replace("#", "").strip()
@@ -196,7 +190,7 @@ def homepage():
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Japaan.net - 最新テクノロジー・ニュース速報</title>
+            <title>JAPAAN.NET - 最新テクノロジー・ニュース速報</title>
             <style>
                 :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
                 * { box-sizing: border-box; margin: 0; padding: 0; }

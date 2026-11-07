@@ -558,18 +558,19 @@ def news_sitemap():
         ET.SubElement(u, "loc").text = f"{JAPAAN_BASE_URL}/news/{article['slug']}"
     return Response(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(urlset, encoding='utf-8', method='xml'), mimetype='text/xml')
 
-# CRON ENDPOINT FOR AUTOMATED RSS FETCHING
+# CRON ENDPOINT FOR AUTOMATED RSS FETCHING (NOW ASYNCHRONOUS)
 @app.route('/api/cron-fetch-rss', methods=['GET', 'POST'])
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
-    fetch_and_publish_rss_articles()
+    # Spin off the heavy lifting into a background thread so cron-job.org gets an instant 200 OK
+    threading.Thread(target=fetch_and_publish_rss_articles).start()
+
     return jsonify({
         "status": "success",
-        "message": "RSS feeds ingested, translated via dynamic Gemini SDK discovery, and auto-published to japaan.net!",
-        "total_articles": len(japaan_db)
+        "message": "Cron job accepted! RSS fetching and Gemini translation dispatched in the background."
     }), 200
 
 # UNIFIED BROADCAST ENDPOINT (HiredFast Target Submission)

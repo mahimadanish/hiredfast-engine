@@ -572,7 +572,7 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     threading.Thread(target=fetch_and_publish_rss_articles).start()
 
@@ -588,12 +588,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}}, 400
+        return jsonify({"error": "target_url is required"}), 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)
@@ -607,7 +607,7 @@ def api_broadcast():
         "location": random.choice(JOB_LOCATIONS),
         "salary": random.choice(SALARY_RANGES),
         "slug": job_slug,
-        "created_at": time.sleep(0) or time.time()
+        "created_at": time.time()
     })
 
     threading.Thread(target=run_full_broadcast_pipeline, args=(job_url, None)).start()

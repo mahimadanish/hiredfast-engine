@@ -42,13 +42,6 @@ RSS_FEEDS = [
     {"url": "https://techcrunch.com/feed/", "category": "Tech"}
 ]
 
-EMULATED_FETCHERS = [
-    "Mozilla/5.0 (compatible; Google-InspectionTool/1.0; +http://www.google.com/bot.html)",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Chrome-Lighthouse",
-    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-    "Twitterbot/1.0"
-]
-
 # --- HELPER FUNCTIONS ---
 def generate_synthetic_job_title(target_url):
     target = target_url.lower()
@@ -91,9 +84,16 @@ def fetch_and_publish_rss_articles():
                 Line 2 onwards: Body text in Japanese.
                 """
                 
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(prompt)
-                content = response.text.strip()
+                # Initialize model using standard identifier path
+                try:
+                    model = genai.GenerativeModel('models/gemini-1.5-flash')
+                    response = model.generate_content(prompt)
+                    content = response.text.strip()
+                except Exception as e:
+                    print(f"Primary model path failed, falling back to gemini-1.5-flash: {e}")
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    response = model.generate_content(prompt)
+                    content = response.text.strip()
                 
                 parts = content.split("\n", 1)
                 title_jp = parts[0].replace("#", "").strip()
@@ -437,7 +437,7 @@ def job_page(slug):
     """
     return render_template_string(html, job=job, base_url=HIREDFAST_BASE_URL)
 
-# JAPAAN.NET NEWS ARTICLE PAGE (Redesigned & Modern)
+# JAPAAN.NET NEWS ARTICLE PAGE
 @app.route('/news/<slug>')
 def japaan_news_page(slug):
     article = next((a for a in japaan_db if a['slug'] == slug), None)
@@ -478,8 +478,6 @@ def japaan_news_page(slug):
             h1 { font-size: 26px; color: var(--primary); line-height: 1.4; margin-bottom: 25px; }
             .content-body { font-size: 16px; color: #1e293b; white-space: pre-line; margin-bottom: 35px; }
             .source-box { background: #f8fafc; border: 1px solid var(--border); padding: 20px; border-radius: 8px; border-left: 4px solid var(--accent); }
-            .back-link { display: inline-block; margin-bottom: 20px; color: var(--accent); text-decoration: none; font-weight: 600; }
-            .back-link:hover { text-decoration: underline; }
             footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
             @media(max-width: 768px) { .article-container { padding: 20px; margin: 20px; } h1 { font-size: 22px; } }
         </style>

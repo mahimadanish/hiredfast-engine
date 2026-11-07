@@ -53,11 +53,12 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_gemini_rest_api(prompt_text):
-    """Direct REST call to Gemini 1.5 Flash using the stable v1 endpoint path."""
+    """Direct REST call to Gemini 1.5 Flash using the verified v1beta models endpoint path."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # Verified correct endpoint path incorporating v1beta and models/ prefix
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{

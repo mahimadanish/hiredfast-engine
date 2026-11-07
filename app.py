@@ -62,7 +62,6 @@ def call_gemini_sdk(prompt_text):
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    # Automatically query Google for models supported by your specific API key
     supported_models = []
     try:
         for m in genai.list_models():
@@ -71,7 +70,6 @@ def call_gemini_sdk(prompt_text):
     except Exception:
         pass
         
-    # Fallback list if discovery fails
     if not supported_models:
         supported_models = ['models/gemini-1.5-flash', 'models/gemini-pro', 'gemini-1.5-flash', 'gemini-pro']
         
@@ -565,7 +563,7 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     fetch_and_publish_rss_articles()
     return jsonify({
@@ -581,12 +579,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}}, 400
+        return jsonify({"error": "target_url is required"}), 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)

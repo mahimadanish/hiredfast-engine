@@ -53,11 +53,11 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_gemini_rest_api(prompt_text):
-    """Direct REST call to Gemini 1.5 Flash using the correct endpoint path."""
+    """Direct REST call to Gemini 1.5 Flash using the stable v1 endpoint path."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{
@@ -276,8 +276,8 @@ def homepage():
                 </div>
                 {% else %}
                 <div class="empty-state">
-                    <h3>現在ニュース記事を収集中です</h3>
-                    <p>自動クローン＆翻訳パイプラインが稼働中です。まもなく最新記事が表示されます。</p>
+                    <h3>最新ニュース速報を準備中です</h3>
+                    <p>ただいま編集部デスクより次回のライブ配信フィードを同期しています。しばらくお待ちください。</p>
                 </div>
                 {% endif %}
             </div>

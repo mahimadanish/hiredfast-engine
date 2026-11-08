@@ -57,8 +57,8 @@ def generate_synthetic_job_title(target_url):
         return "Embedded Systems & Hardware Simulation Developer"
     return "Senior Infrastructure & Cloud Systems Architect"
 
-def call_gemini_sdk(prompt_text):
-    """Dynamically discovers and uses models authorized for your specific API key."""
+def call_gemini_sdk_structured(feed_category, original_title, original_summary):
+    """Uses structured parsing and system instructions to guarantee clean output and correct categorization."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY environment variable is missing.")
     
@@ -73,11 +73,36 @@ def call_gemini_sdk(prompt_text):
     if not supported_models:
         supported_models = ['models/gemini-1.5-flash', 'models/gemini-pro', 'gemini-1.5-flash', 'gemini-pro']
         
+    system_instruction = (
+        "You are an automated professional Japanese news editorial engine. "
+        "Your task is to analyze news items, assign them to the correct category (Tech, Business, World, or Sports), "
+        "and translate/rewrite them into clean Japanese news reports. "
+        "CRITICAL: Never output markdown code blocks, conversational filler, prompt echoes, or metadata. "
+        "Follow the requested output format strictly."
+    )
+    
+    user_prompt = f"""Analyze this news story, select the right category from [Tech, Business, World, Sports], and rewrite it in Japanese.
+
+Feed Category Hint: {feed_category}
+Title: {original_title}
+Summary: {original_summary}
+
+Respond ONLY in this exact format:
+CATEGORY: [Tech or Business or World or Sports]
+HEADLINE: [Japanese headline starting with 【Category速報】]
+BODY:
+[Paragraph 1]
+[Paragraph 2]
+[Paragraph 3]"""
+
     last_exception = None
     for model_name in supported_models:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt_text)
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_instruction
+            )
+            response = model.generate_content(user_prompt)
             if response and response.text:
                 return response.text.strip()
         except Exception as e:
@@ -87,13 +112,13 @@ def call_gemini_sdk(prompt_text):
     raise Exception(f"All Gemini models failed for this API key. Last error: {last_exception}")
 
 def fetch_and_publish_rss_articles():
-    """Ingests RSS feeds, translates/spins items via official Gemini SDK into clean Japanese articles, and auto-publishes."""
+    """Ingests RSS feeds, auto-categorizes, translates via Gemini, and cleans bad articles."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:
         try:
             parsed_feed = feedparser.parse(feed_info["url"])
-            category = feed_info["category"]
+            feed_category = feed_info["category"]
             
             for entry in parsed_feed.entries[:2]:
                 original_title = entry.get('title', '')
@@ -104,29 +129,28 @@ def fetch_and_publish_rss_articles():
                 if any(article.get('source_rss_link') == target_url for article in japaan_db):
                     continue
 
-                # STRICT PROMPT INSTRUCTIONS TO AVOID META-TEXT
-                prompt = f"""You are a professional Japanese news editor. Rewrite and translate the following news item into natural Japanese.
-Output ONLY the final article text in this exact format, with NO conversational filler, NO notes, and NO metadata:
-
-Line 1: 【{category}速報】(Catchy Japanese Headline)
-Line 2 onwards: (3 clean paragraphs of news reporting body text in Japanese)
-
-Category: {category}
-Title: {original_title}
-Summary: {original_summary}"""
+                raw_response = call_gemini_sdk_structured(feed_category, original_title, original_summary)
                 
-                content = call_gemini_sdk(prompt)
+                # Remove any markdown artifacts
+                raw_response = raw_response.replace("```html", "").replace("```markdown", "").replace("```", "").strip()
                 
-                # Clean up any potential code block markers
-                content = content.replace("```html", "").replace("```markdown", "").replace("```", "").strip()
+                # Parse structured tags
+                cat_match = re.search(r'CATEGORY:\s*([A-Za-z]+)', raw_response)
+                headline_match = re.search(r'HEADLINE:\s*(.*)', raw_response)
+                body_match = re.search(r'BODY:\s*(.*)', raw_response, re.DOTALL)
                 
-                parts = content.split("\n", 1)
-                title_jp = parts[0].replace("#", "").strip()
-                body_jp = parts[1].strip() if len(parts) > 1 else "最新のニュース・技術動向に関する詳細リポートです。"
+                category = cat_match.group(1).strip() if cat_match else feed_category
+                if category not in ["Tech", "Business", "World", "Sports"]:
+                    category = feed_category
+                
+                title_jp = headline_match.group(1).strip().replace("*", "").replace("#", "") if headline_match else f"【{category}速報】{original_title}"
+                body_jp = body_match.group(1).strip().replace("*", "") if body_match else original_summary
+                
+                # SAFETY FILTER: Discard if model leaked prompt instructions
+                if "Role:" in title_jp or "Professional Japanese" in title_jp or "Task:" in body_jp or len(title_jp) < 5:
+                    continue  # Skip saving broken articles entirely!
                 
                 timestamp = int(time.time())
-                
-                # Clean slug generator to prevent empty or double-dash URLs
                 slug_base = re.sub(r'[^a-zA-Z0-9]+', '-', original_title.lower()).strip('-')
                 if not slug_base:
                     slug_base = "news-report"
@@ -145,7 +169,10 @@ Summary: {original_summary}"""
                     "created_at": time.time()
                 })
                 
-                # Dispatch background broadcast pings for the new article
+                # Auto-purge any historical broken articles from memory automatically
+                japaan_db = [a for a in japaan_db if "Role:" not in a['title_jp'] and "Professional Japanese" not in a['title_jp']]
+
+                # Dispatch background broadcast pings
                 threading.Thread(target=run_full_broadcast_pipeline, args=(None, japaan_url)).start()
                 
         except Exception as e:
@@ -155,7 +182,7 @@ def clean_expired_jobs():
     global jobs_db, japaan_db
     seven_days_ago = time.time() - (7 * 86400)
     jobs_db = [j for j in jobs_db if j['created_at'] > seven_days_ago]
-    japaan_db = [a for a in japaan_db if a['created_at'] > seven_days_ago]
+    japaan_db = [a for a in japaan_db if a['created_at'] > seven_days_ago and "Role:" not in a['title_jp']]
 
 def get_google_access_token():
     if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_KEY_PATH):
@@ -572,13 +599,13 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     threading.Thread(target=fetch_and_publish_rss_articles).start()
 
     return jsonify({
         "status": "success",
-        "message": "Cron job accepted! Clean RSS fetching and Gemini translation dispatched in the background."
+        "message": "Cron job accepted! Structured RSS fetching and auto-categorization dispatched in the background."
     }), 200
 
 # UNIFIED BROADCAST ENDPOINT (HiredFast Target Submission)
@@ -588,12 +615,12 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')
     if not target_url:
-        return jsonify({"error": "target_url is required"}), 400
+        return jsonify({"error": "target_url is required"}}, 400
 
     timestamp = int(time.time())
     job_title = generate_synthetic_job_title(target_url)

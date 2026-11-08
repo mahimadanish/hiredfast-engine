@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import random
 import threading
 import requests
@@ -52,7 +53,7 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_groq_structured_rewrite(category, original_title, original_summary):
-    """Uses Groq JSON mode to guarantee clean output without any prompt leakage."""
+    """Uses Groq JSON mode with a valid model to guarantee clean output without prompt leakage."""
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY environment variable is missing.")
     
@@ -80,13 +81,12 @@ JSON structure required:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.7,
     )
     
-    import json
     return json.loads(response.choices[0].message.content.strip())
 
 def fetch_and_publish_rss_articles():
@@ -205,7 +205,7 @@ def homepage():
                 .hero span.badge { background: var(--accent); color: white; padding: 4px 10px; font-size: 12px; border-radius: 20px; font-weight: 600; text-transform: uppercase; }
                 .hero h1 { font-size: 28px; margin-top: 15px; line-height: 1.4; }
                 .hero p { margin-top: 10px; color: #94a3b8; font-size: 15px; }
-                .grid { display: grid; grid-type: template; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+                .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
                 .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s; display: flex; flex-direction: column; justify-content: space-between; }
                 .card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.08); }
                 .card-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -239,7 +239,7 @@ def homepage():
                 </div>
 
                 <h2 style="margin-bottom: 20px; font-size: 22px; color: var(--primary);">最新ニュース一覧</h2>
-                <div class="grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px;">
+                <div class="grid">
                     {% for article in articles[1:] %}
                     <div class="card">
                         <div>
@@ -402,11 +402,11 @@ def japaan_news_page(slug):
     """
     return render_template_string(html, article=article)
 
-# SITEMAPS
+# SITEMAPS (FIXED XML NAMESPACE BUG)
 @app.route('/sitemap.xml')
 def sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    urlset = ET.Element("urlset", {"xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9"})
     url_elm = ET.SubElement(urlset, "url")
     ET.SubElement(url_elm, "loc").text = HIREDFAST_BASE_URL
     for job in jobs_db:
@@ -417,7 +417,7 @@ def sitemap():
 @app.route('/news-sitemap.xml')
 def news_sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    urlset = ET.Element("urlset", {"xmlns": "http://www.sitemaps.org/schemas/sitemap/0.9"})
     for article in japaan_db:
         u = ET.SubElement(urlset, "url")
         ET.SubElement(u, "loc").text = f"{JAPAAN_BASE_URL}/news/{article['slug']}"

@@ -53,7 +53,7 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_groq_structured_rewrite(category, original_title, original_summary):
-    """Uses Groq JSON mode with a valid model to guarantee clean output without prompt leakage."""
+    """Uses Groq JSON mode with the active llama-3.1-8b-instant model."""
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY environment variable is missing.")
     
@@ -81,7 +81,7 @@ JSON structure required:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.7,
@@ -402,7 +402,7 @@ def japaan_news_page(slug):
     """
     return render_template_string(html, article=article)
 
-# SITEMAPS (FIXED XML NAMESPACE BUG)
+# SITEMAPS
 @app.route('/sitemap.xml')
 def sitemap():
     clean_expired_jobs()
@@ -428,7 +428,7 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     threading.Thread(target=fetch_and_publish_rss_articles).start()
 
@@ -444,7 +444,7 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}), 401
+        return jsonify({"error": "Unauthorized"}}, 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')

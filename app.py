@@ -53,7 +53,7 @@ def generate_synthetic_job_title(target_url):
     return "Senior Infrastructure & Cloud Systems Architect"
 
 def call_groq_structured_rewrite(category, original_title, original_summary):
-    """Uses Groq JSON mode with the active llama-3.1-8b-instant model."""
+    """Uses Groq JSON mode with the active openai/gpt-oss-20b model."""
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY environment variable is missing.")
     
@@ -81,7 +81,7 @@ JSON structure required:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.7,

@@ -428,7 +428,7 @@ def news_sitemap():
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     threading.Thread(target=fetch_and_publish_rss_articles).start()
 
@@ -444,7 +444,7 @@ def api_broadcast():
     
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
     if provided_key != ADMIN_API_KEY:
-        return jsonify({"error": "Unauthorized"}}, 401
+        return jsonify({"error": "Unauthorized"}), 401
 
     data = request.get_json(silent=True) or request.form
     target_url = data.get('target_url')

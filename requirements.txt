@@ -2,5 +2,4 @@ flask
 requests
 feedparser
 groq
-google-auth
 gunicorn

@@ -7,7 +7,7 @@ import requests
 import feedparser
 import xml.etree.ElementTree as ET
 from flask import Flask, request, jsonify, render_template_string, Response
-import google.generativeai as genai
+from groq import Groq
 
 app = Flask(__name__)
 
@@ -21,12 +21,7 @@ HIREDFAST_BASE_URL = f"https://{HIREDFAST_DOMAIN}"
 JAPAAN_DOMAIN = "japaan.net"
 JAPAAN_BASE_URL = f"https://{JAPAAN_DOMAIN}"
 
-GOOGLE_SERVICE_ACCOUNT_KEY_PATH = "google_credentials.json"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# Initialize official Gemini SDK
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 # In-memory stores
 jobs_db = []      # Stores hiredfast.online JobPosting entries
@@ -35,11 +30,10 @@ japaan_db = []    # Stores japaan.net NewsArticle entries
 JOB_LOCATIONS = ["Remote", "New York, NY", "Austin, TX", "London, UK", "San Francisco, CA"]
 SALARY_RANGES = ["$90,000 - $120,000", "$130,000 - $160,000", "$170,000 - $210,000"]
 
-# Active RSS feeds
+# Active RSS feeds with designated categories
 RSS_FEEDS = [
     {"url": "https://www.nhk.or.jp/rss/news/cat0.xml", "category": "Tech"},
     {"url": "https://gigazine.net/news/rss_2.0/", "category": "Tech"},
-    {"url": "https://techcrunch.com/feed/", "category": "Tech"},
     {"url": "https://www.nhk.or.jp/rss/news/cat6.xml", "category": "Business"},
     {"url": "https://www.nhk.or.jp/rss/news/cat5.xml", "category": "World"}
 ]
@@ -57,68 +51,52 @@ def generate_synthetic_job_title(target_url):
         return "Embedded Systems & Hardware Simulation Developer"
     return "Senior Infrastructure & Cloud Systems Architect"
 
-def call_gemini_sdk_structured(feed_category, original_title, original_summary):
-    """Uses structured parsing and system instructions to guarantee clean output and correct categorization."""
-    if not GEMINI_API_KEY:
-        raise Exception("GEMINI_API_KEY environment variable is missing.")
+def call_groq_structured_rewrite(category, original_title, original_summary):
+    """Uses Groq JSON mode to guarantee clean output without any prompt leakage."""
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY environment variable is missing.")
     
-    supported_models = []
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                supported_models.append(m.name)
-    except Exception:
-        pass
-        
-    if not supported_models:
-        supported_models = ['models/gemini-1.5-flash', 'models/gemini-pro', 'gemini-1.5-flash', 'gemini-pro']
-        
-    system_instruction = (
-        "You are an automated professional Japanese news editorial engine. "
-        "Your task is to analyze news items, assign them to the correct category (Tech, Business, World, or Sports), "
-        "and translate/rewrite them into clean Japanese news reports. "
-        "CRITICAL: Never output markdown code blocks, conversational filler, prompt echoes, or metadata. "
-        "Follow the requested output format strictly."
+    client = Groq(api_key=GROQ_API_KEY)
+    
+    prompt = f"""
+You are a professional Japanese news journalist. Rewrite and translate the following news item into fluent, natural Japanese news reporting text.
+
+Feed Category Hint: {category}
+Original Title: {original_title}
+Original Summary: {original_summary[:800]}
+
+Rules:
+1. Assign the correct category from [Tech, Business, World, Sports].
+2. Create a clean Japanese headline starting with 【Category速報】 (e.g. 【Tech速報】...).
+3. Write exactly 3 paragraphs of news body text in Japanese.
+4. Return ONLY a valid JSON object with no markdown wrapping, no extra text, and no conversational filler.
+
+JSON structure required:
+{{
+  "category": "Tech",
+  "title": "【Tech速報】Japanese headline here",
+  "body": "Paragraph 1 text here.\\n\\nParagraph 2 text here.\\n\\nParagraph 3 text here."
+}}
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.7,
     )
     
-    user_prompt = f"""Analyze this news story, select the right category from [Tech, Business, World, Sports], and rewrite it in Japanese.
-
-Feed Category Hint: {feed_category}
-Title: {original_title}
-Summary: {original_summary}
-
-Respond ONLY in this exact format:
-CATEGORY: [Tech or Business or World or Sports]
-HEADLINE: [Japanese headline starting with 【Category速報】]
-BODY:
-[Paragraph 1]
-[Paragraph 2]
-[Paragraph 3]"""
-
-    last_exception = None
-    for model_name in supported_models:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_instruction
-            )
-            response = model.generate_content(user_prompt)
-            if response and response.text:
-                return response.text.strip()
-        except Exception as e:
-            last_exception = e
-            continue
-            
-    raise Exception(f"All Gemini models failed for this API key. Last error: {last_exception}")
+    import json
+    return json.loads(response.choices[0].message.content.strip())
 
 def fetch_and_publish_rss_articles():
-    """Ingests RSS feeds, auto-categorizes, translates via Gemini, and cleans bad articles."""
+    """Ingests RSS feeds, rewrites via Groq, and auto-publishes to japaan.net."""
     global japaan_db
     
     for feed_info in RSS_FEEDS:
         try:
             parsed_feed = feedparser.parse(feed_info["url"])
-            feed_category = feed_info["category"]
+            default_category = feed_info["category"]
             
             for entry in parsed_feed.entries[:2]:
                 original_title = entry.get('title', '')
@@ -129,26 +107,14 @@ def fetch_and_publish_rss_articles():
                 if any(article.get('source_rss_link') == target_url for article in japaan_db):
                     continue
 
-                raw_response = call_gemini_sdk_structured(feed_category, original_title, original_summary)
+                result = call_groq_structured_rewrite(default_category, original_title, original_summary)
                 
-                # Remove any markdown artifacts
-                raw_response = raw_response.replace("```html", "").replace("```markdown", "").replace("```", "").strip()
-                
-                # Parse structured tags
-                cat_match = re.search(r'CATEGORY:\s*([A-Za-z]+)', raw_response)
-                headline_match = re.search(r'HEADLINE:\s*(.*)', raw_response)
-                body_match = re.search(r'BODY:\s*(.*)', raw_response, re.DOTALL)
-                
-                category = cat_match.group(1).strip() if cat_match else feed_category
+                category = result.get("category", default_category)
                 if category not in ["Tech", "Business", "World", "Sports"]:
-                    category = feed_category
-                
-                title_jp = headline_match.group(1).strip().replace("*", "").replace("#", "") if headline_match else f"【{category}速報】{original_title}"
-                body_jp = body_match.group(1).strip().replace("*", "") if body_match else original_summary
-                
-                # SAFETY FILTER: Discard if model leaked prompt instructions
-                if "Role:" in title_jp or "Professional Japanese" in title_jp or "Task:" in body_jp or len(title_jp) < 5:
-                    continue  # Skip saving broken articles entirely!
+                    category = default_category
+                    
+                title_jp = result.get("title", f"【{category}速報】{original_title}")
+                body_jp = result.get("body", original_summary)
                 
                 timestamp = int(time.time())
                 slug_base = re.sub(r'[^a-zA-Z0-9]+', '-', original_title.lower()).strip('-')
@@ -169,10 +135,7 @@ def fetch_and_publish_rss_articles():
                     "created_at": time.time()
                 })
                 
-                # Auto-purge any historical broken articles from memory automatically
-                japaan_db = [a for a in japaan_db if "Role:" not in a['title_jp'] and "Professional Japanese" not in a['title_jp']]
-
-                # Dispatch background broadcast pings
+                # Dispatch background broadcasting pings
                 threading.Thread(target=run_full_broadcast_pipeline, args=(None, japaan_url)).start()
                 
         except Exception as e:
@@ -182,44 +145,16 @@ def clean_expired_jobs():
     global jobs_db, japaan_db
     seven_days_ago = time.time() - (7 * 86400)
     jobs_db = [j for j in jobs_db if j['created_at'] > seven_days_ago]
-    japaan_db = [a for a in japaan_db if a['created_at'] > seven_days_ago and "Role:" not in a['title_jp']]
+    japaan_db = [a for a in japaan_db if a['created_at'] > seven_days_ago]
 
-def get_google_access_token():
-    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_KEY_PATH):
-        return None
-    try:
-        from google.oauth2 import service_account
-        import google.auth.transport.requests
-        scopes = ["[https://www.googleapis.com/auth/indexing](https://www.googleapis.com/auth/indexing)"]
-        creds = service_account.Credentials.from_service_account_file(
-            GOOGLE_SERVICE_ACCOUNT_KEY_PATH, scopes=scopes
-        )
-        auth_req = google.auth.transport.requests.Request()
-        creds.refresh(auth_req)
-        return creds.token
-    except Exception:
-        return None
-
-# --- BACKGROUND BROADCAST ENGINE ---
 def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
-    token = get_google_access_token()
-    if token and job_url:
-        try:
-            requests.post(
-                "[https://indexing.googleapis.com/v3/urlNotifications:publish](https://indexing.googleapis.com/v3/urlNotifications:publish)",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"url": job_url, "type": "URL_UPDATED"},
-                timeout=3
-            )
-        except Exception: pass
-
     urls_to_index = []
     if job_url: urls_to_index.append(job_url)
     if japaan_url: urls_to_index.append(japaan_url)
 
     if urls_to_index:
         try:
-            requests.post("[https://api.indexnow.org/indexnow](https://api.indexnow.org/indexnow)", json={
+            requests.post("https://api.indexnow.org/indexnow", json={
                 "host": HIREDFAST_DOMAIN,
                 "key": INDEXNOW_KEY,
                 "keyLocation": f"{HIREDFAST_BASE_URL}/{INDEXNOW_KEY}.txt",
@@ -228,7 +163,7 @@ def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
         except Exception: pass
 
     try:
-        requests.post("[https://pubsubhubbub.appspot.com/](https://pubsubhubbub.appspot.com/)", data={
+        requests.post("https://pubsubhubbub.appspot.com/", data={
             "hub.mode": "publish",
             "hub.url": f"{HIREDFAST_BASE_URL}/feed.xml"
         }, timeout=3)
@@ -258,29 +193,27 @@ def homepage():
             <style>
                 :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
                 * { box-sizing: border-box; margin: 0; padding: 0; }
-                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.7; }
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.7; }
                 header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
                 .nav-container { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; flex-wrap: wrap; gap: 10px; }
-                .logo { font-size: 24px; font-weight: 800; color: var(--primary); text-decoration: none; letter-spacing: -0.5px; }
+                .logo { font-size: 24px; font-weight: 800; color: var(--primary); text-decoration: none; }
                 .logo span { color: var(--accent); }
-                nav a { margin-left: 20px; text-decoration: none; color: var(--text); font-weight: 600; font-size: 15px; transition: color 0.2s; }
+                nav a { margin-left: 20px; text-decoration: none; color: var(--text); font-weight: 600; font-size: 15px; }
                 nav a:hover, nav a.active { color: var(--accent); }
                 .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
                 .hero { background: linear-gradient(135deg, #1e293b, #0f172a); color: white; padding: 40px; border-radius: 12px; margin-bottom: 35px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
                 .hero span.badge { background: var(--accent); color: white; padding: 4px 10px; font-size: 12px; border-radius: 20px; font-weight: 600; text-transform: uppercase; }
                 .hero h1 { font-size: 28px; margin-top: 15px; line-height: 1.4; }
                 .hero p { margin-top: 10px; color: #94a3b8; font-size: 15px; }
-                .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
-                .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s, box-shadow 0.2s; display: flex; flex-direction: column; justify-content: space-between; }
+                .grid { display: grid; grid-type: template; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+                .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s; display: flex; flex-direction: column; justify-content: space-between; }
                 .card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.08); }
                 .card-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
                 .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; }
-                .card h3 a { color: var(--primary); text-decoration: none; font-size: 18px; line-height: 1.5; transition: color 0.2s; }
+                .card h3 a { color: var(--primary); text-decoration: none; font-size: 18px; line-height: 1.5; }
                 .card h3 a:hover { color: var(--accent); }
                 .empty-state { text-align: center; padding: 60px 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }
-                .empty-state h3 { color: var(--primary); margin-bottom: 10px; }
                 footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
-                @media(max-width: 768px) { .hero { padding: 25px; } .hero h1 { font-size: 22px; } }
             </style>
         </head>
         <body>
@@ -306,7 +239,7 @@ def homepage():
                 </div>
 
                 <h2 style="margin-bottom: 20px; font-size: 22px; color: var(--primary);">最新ニュース一覧</h2>
-                <div class="grid">
+                <div class="grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px;">
                     {% for article in articles[1:] %}
                     <div class="card">
                         <div>
@@ -324,7 +257,7 @@ def homepage():
                 {% else %}
                 <div class="empty-state">
                     <h3>最新ニュース速報を準備中です</h3>
-                    <p>ただいま編集部デスクより次回のライブ配信フィードを同期しています。しばらくお待ちください。</p>
+                    <p>ただいま編集部デスクより次回のライブ配信フィードを同期しています。</p>
                 </div>
                 {% endif %}
             </div>
@@ -351,13 +284,10 @@ def homepage():
             ul { list-style: none; padding: 0; }
             li { background: #fdfdfd; border: 1px solid #e1e4e8; padding: 15px; margin-bottom: 10px; border-radius: 6px; }
             a { color: #0366d6; text-decoration: none; }
-            a:hover { text-decoration: underline; }
         </style>
     </head>
     <body>
         <h1>Latest Technical Roles & Application Portals</h1>
-        <p>Active positions updated in real-time. Select a job entry to view direct specifications:</p>
-        <hr>
         <ul>
             {% for job in jobs %}
             <li>
@@ -371,7 +301,7 @@ def homepage():
     """
     return render_template_string(html, jobs=jobs_db[:50])
 
-# CATEGORY FILTER ROUTE FOR JAPAAN.NET
+# CATEGORY FILTER ROUTE
 @app.route('/category/<cat_name>')
 def japaan_category_page(cat_name):
     clean_expired_jobs()
@@ -382,63 +312,21 @@ def japaan_category_page(cat_name):
     <html lang="ja">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>{{ cat_name | capitalize }} ニュース - Japaan Network</title>
         <style>
-            :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.7; }
-            header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-            .nav-container { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; flex-wrap: wrap; gap: 10px; }
-            .logo { font-size: 24px; font-weight: 800; color: var(--primary); text-decoration: none; }
-            .logo span { color: var(--accent); }
-            nav a { margin-left: 20px; text-decoration: none; color: var(--text); font-weight: 600; font-size: 15px; }
-            nav a:hover, nav a.active { color: var(--accent); }
-            .container { max-width: 1100px; margin: 30px auto; padding: 0 20px; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
-            .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: transform 0.2s; }
-            .card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.08); }
-            .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; display: inline-block; margin-bottom: 12px; }
-            .card h3 a { color: var(--primary); text-decoration: none; font-size: 18px; line-height: 1.5; }
-            .card h3 a:hover { color: var(--accent); }
-            footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #334155; line-height: 1.7; padding: 20px; max-width: 1100px; margin: 0 auto; }
+            a { color: #2563eb; text-decoration: none; }
         </style>
     </head>
     <body>
-        <header>
-            <div class="nav-container">
-                <a href="/" class="logo">JAPAAN<span>.NET</span></a>
-                <nav>
-                    <a href="/">トップ</a>
-                    <a href="/category/tech" class="{% if cat_name.lower() == 'tech' %}active{% endif %}">Tech</a>
-                    <a href="/category/business" class="{% if cat_name.lower() == 'business' %}active{% endif %}">Business</a>
-                    <a href="/category/sports" class="{% if cat_name.lower() == 'sports' %}active{% endif %}">Sports</a>
-                    <a href="/category/world" class="{% if cat_name.lower() == 'world' %}active{% endif %}">World</a>
-                </nav>
-            </div>
-        </header>
-
-        <div class="container">
-            <h1 style="margin-bottom: 25px; font-size: 26px; color: var(--primary);">{{ cat_name | capitalize }} カテゴリー速報</h1>
-            {% if articles %}
-            <div class="grid">
-                {% for article in articles %}
-                <div class="card">
-                    <span class="cat-tag">{{ article.category }}</span>
-                    <h3><a href="/news/{{ article.slug }}">{{ article.title_jp }}</a></h3>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-            <div style="background: white; padding: 40px; border-radius: 10px; border: 1px solid var(--border); text-align: center;">
-                <p>このカテゴリーにはまだ記事がありません。</p>
-            </div>
-            {% endif %}
-        </div>
-
-        <footer>
-            <p>&copy; 2026 Japaan.net News Editorial Network.</p>
-        </footer>
+        <h1>{{ cat_name | capitalize }} カテゴリー速報</h1>
+        <p><a href="/">&larr; トップに戻る</a></p>
+        <hr>
+        <ul>
+            {% for article in articles %}
+            <li><a href="/news/{{ article.slug }}"><strong>{{ article.title_jp }}</strong></a></li>
+            {% endfor %}
+        </ul>
     </body>
     </html>
     """
@@ -457,29 +345,6 @@ def job_page(slug):
     <head>
         <meta charset="UTF-8">
         <title>{{ job.title }} - Application Portal</title>
-        <script type="application/ld+json">
-        {
-          "@context": "[https://schema.org/](https://schema.org/)",
-          "@type": "JobPosting",
-          "title": "{{ job.title }}",
-          "description": "Full specifications and documentation hosted on the primary verification platform.",
-          "datePosted": "2026-03-01",
-          "validThrough": "2026-12-31",
-          "employmentType": "FULL_TIME",
-          "hiringOrganization": {
-            "@type": "Organization",
-            "name": "HiredFast Global",
-            "sameAs": "{{ job.target_url }}"
-          },
-          "jobLocation": {
-            "@type": "Place",
-            "address": {
-              "@type": "PostalAddress",
-              "addressLocality": "{{ job.location }}"
-            }
-          }
-        }
-        </script>
     </head>
     <body style="font-family: Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.5;">
         <h2>{{ job.title }}</h2>
@@ -493,7 +358,7 @@ def job_page(slug):
     </body>
     </html>
     """
-    return render_template_string(html, job=job, base_url=HIREDFAST_BASE_URL)
+    return render_template_string(html, job=job)
 
 # JAPAAN.NET NEWS ARTICLE PAGE
 @app.route('/news/<slug>')
@@ -509,65 +374,29 @@ def japaan_news_page(slug):
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>{{ article.title_jp }} - Japaan News</title>
-        <script type="application/ld+json">
-        {
-          "@context": "[https://schema.org](https://schema.org)",
-          "@type": "NewsArticle",
-          "headline": "{{ article.title_jp }}",
-          "articleSection": "{{ article.category }}",
-          "datePublished": "2026-03-01T08:00:00+09:00",
-          "author": {
-            "@type": "Organization",
-            "name": "Japaan News Editorial"
-          }
-        }
-        </script>
         <style>
-            :root { --primary: #0f172a; --accent: #2563eb; --bg: #f8fafc; --card-bg: #ffffff; --text: #334155; --border: #e2e8f0; }
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); color: var(--text); line-height: 1.8; }
-            header { background: var(--card-bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-            .nav-container { max-width: 800px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; }
-            .logo { font-size: 22px; font-weight: 800; color: var(--primary); text-decoration: none; }
-            .logo span { color: var(--accent); }
-            .article-container { max-width: 800px; margin: 40px auto; background: var(--card-bg); padding: 40px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); }
-            .meta-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; font-size: 14px; color: #64748b; }
-            .cat-tag { background: #eff6ff; color: var(--accent); padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700; }
-            h1 { font-size: 26px; color: var(--primary); line-height: 1.4; margin-bottom: 25px; }
-            .content-body { font-size: 16px; color: #1e293b; white-space: pre-line; margin-bottom: 35px; }
-            .source-box { background: #f8fafc; border: 1px solid var(--border); padding: 20px; border-radius: 8px; border-left: 4px solid var(--accent); }
-            footer { text-align: center; padding: 40px 20px; color: #64748b; font-size: 14px; border-top: 1px solid var(--border); margin-top: 60px; background: var(--card-bg); }
-            @media(max-width: 768px) { .article-container { padding: 20px; margin: 20px; } h1 { font-size: 22px; } }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #334155; line-height: 1.8; max-width: 800px; margin: 40px auto; padding: 20px; }
+            .article-container { background: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #e2e8f0; }
+            h1 { font-size: 24px; color: #0f172a; margin-bottom: 20px; }
+            .content-body { white-space: pre-line; margin-bottom: 30px; }
+            .source-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; }
         </style>
     </head>
     <body>
-        <header>
-            <div class="nav-container">
-                <a href="/" class="logo">JAPAAN<span>.NET</span></a>
-                <a href="/" style="text-decoration: none; color: var(--text); font-weight: 600; font-size: 14px;">&larr; トップに戻る</a>
-            </div>
-        </header>
-
+        <p><a href="/">&larr; トップに戻る</a></p>
         <div class="article-container">
-            <div class="meta-bar">
-                <span class="cat-tag">{{ article.category }}</span>
-                <span>Japaan 編集部 AI速報</span>
-            </div>
-            <h1>{{ article.title_jp }}</h1>
-            <hr style="border: none; border-top: 1px solid var(--border); margin-bottom: 25px;">
+            <span style="background: #eff6ff; color: #2563eb; padding: 3px 10px; font-size: 12px; border-radius: 6px; font-weight: 700;">{{ article.category }}</span>
+            <h1 style="margin-top: 15px;">{{ article.title_jp }}</h1>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin-bottom: 20px;">
             <div class="content-body">{{ article.body_jp }}</div>
             
             <div class="source-box">
-                <p style="font-weight: bold; margin-bottom: 5px; color: var(--primary);">参照・検証元ソース (Original Source):</p>
-                <a href="{{ article.target_url }}" target="_blank" rel="noopener follow" style="color: var(--accent); word-break: break-all; font-weight: 500;">
+                <p style="font-weight: bold; margin-bottom: 5px;">参照・検証元ソース (Original Source):</p>
+                <a href="{{ article.target_url }}" target="_blank" rel="noopener follow" style="color: #2563eb; word-break: break-all;">
                     {{ article.target_url }}
                 </a>
             </div>
         </div>
-
-        <footer>
-            <p>&copy; 2026 Japaan.net News Editorial Network.</p>
-        </footer>
     </body>
     </html>
     """
@@ -577,7 +406,7 @@ def japaan_news_page(slug):
 @app.route('/sitemap.xml')
 def sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="[http://www.sitemaps.org/schemas/sitemap/0.9](http://www.sitemaps.org/schemas/sitemap/0.9)")
+    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     url_elm = ET.SubElement(urlset, "url")
     ET.SubElement(url_elm, "loc").text = HIREDFAST_BASE_URL
     for job in jobs_db:
@@ -588,13 +417,13 @@ def sitemap():
 @app.route('/news-sitemap.xml')
 def news_sitemap():
     clean_expired_jobs()
-    urlset = ET.Element("urlset", xmlns="[http://www.sitemaps.org/schemas/sitemap/0.9](http://www.sitemaps.org/schemas/sitemap/0.9)")
+    urlset = ET.Element("urlset", xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
     for article in japaan_db:
         u = ET.SubElement(urlset, "url")
         ET.SubElement(u, "loc").text = f"{JAPAAN_BASE_URL}/news/{article['slug']}"
     return Response(b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(urlset, encoding='utf-8', method='xml'), mimetype='text/xml')
 
-# CRON ENDPOINT FOR AUTOMATED RSS FETCHING (ASYNCHRONOUS)
+# CRON ENDPOINT
 @app.route('/api/cron-fetch-rss', methods=['GET', 'POST'])
 def cron_fetch_rss():
     provided_key = request.headers.get("X-API-KEY") or request.args.get("key")
@@ -605,10 +434,10 @@ def cron_fetch_rss():
 
     return jsonify({
         "status": "success",
-        "message": "Cron job accepted! Structured RSS fetching and auto-categorization dispatched in the background."
+        "message": "Groq RSS fetching dispatched in background!"
     }), 200
 
-# UNIFIED BROADCAST ENDPOINT (HiredFast Target Submission)
+# UNIFIED BROADCAST ENDPOINT
 @app.route('/api/broadcast', methods=['POST'])
 def api_broadcast():
     clean_expired_jobs()
@@ -637,13 +466,11 @@ def api_broadcast():
         "created_at": time.time()
     })
 
-    threading.Thread(target=run_full_broadcast_pipeline, args=(job_url, None)).start()
-
     return jsonify({
         "status": "success",
         "hiredfast_url": job_url,
         "target_url": target_url,
-        "message": "Target published to hiredfast.online and indexing broadcast pipeline dispatched!"
+        "message": "Target published!"
     }), 200
 
 if __name__ == '__main__':

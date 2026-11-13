@@ -3,3 +3,5 @@ requests
 feedparser
 groq
 gunicorn
+google-auth
+google-api-python-client

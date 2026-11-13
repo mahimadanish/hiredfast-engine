@@ -10,6 +10,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, Response
 from groq import Groq
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
@@ -178,27 +180,53 @@ def clean_expired_jobs():
     jobs_db = [j for j in jobs_db if j['created_at'] > seven_days_ago]
     japaan_db = [a for a in japaan_db if a['created_at'] > seven_days_ago]
 
+# --- SIGNAL 1: GOOGLE INDEXING API ---
+def push_google_indexing_api(target_url):
+    try:
+        if not os.path.exists("indexing_key.json"):
+            return {"status": "error", "message": "indexing_key.json missing"}
+            
+        scopes = ["https://www.googleapis.com/auth/indexing"]
+        credentials = service_account.Credentials.from_service_account_file(
+            "indexing_key.json", scopes=scopes
+        )
+        service = build("indexing", "v3", credentials=credentials)
+        body = {"url": target_url, "type": "URL_UPDATED"}
+        response = service.urlNotifications().publish(body=body).execute()
+        return {"status": "ok", "response": response}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- UNIFIED BROADCAST PIPELINE (GOOGLE API + INDEXNOW + WEBSUB) ---
 def run_full_broadcast_pipeline(job_url=None, japaan_url=None):
     urls_to_index = []
     if job_url: urls_to_index.append(job_url)
     if japaan_url: urls_to_index.append(japaan_url)
 
-    if urls_to_index:
+    for url in urls_to_index:
+        # 1. Push to Google Indexing API
+        g_res = push_google_indexing_api(url)
+        print(f"Google Indexing API response for {url}: {g_res}")
+
+        # 2. Push to IndexNow (Bing / Yandex / etc.)
         try:
             requests.post("https://api.indexnow.org/indexnow", json={
                 "host": HIREDFAST_DOMAIN,
                 "key": INDEXNOW_KEY,
                 "keyLocation": f"{HIREDFAST_BASE_URL}/{INDEXNOW_KEY}.txt",
-                "urlList": urls_to_index
+                "urlList": [url]
             }, timeout=3)
-        except Exception: pass
+        except Exception as e:
+            print(f"IndexNow error: {e}")
 
+    # 3. Ping WebSub (PubSubHubbub) Hub
     try:
         requests.post("https://pubsubhubbub.appspot.com/", data={
             "hub.mode": "publish",
             "hub.url": f"{HIREDFAST_BASE_URL}/feed.xml"
         }, timeout=3)
-    except Exception: pass
+    except Exception as e:
+        print(f"WebSub error: {e}")
 
 
 # --- ROUTING & DOMAIN DISPATCHING ---
@@ -547,11 +575,14 @@ def api_broadcast():
         "created_at": time.time()
     })
 
+    # Trigger background broadcast pipeline with Google API + IndexNow + WebSub
+    threading.Thread(target=run_full_broadcast_pipeline, args=(job_url, None)).start()
+
     return jsonify({
         "status": "success",
         "hiredfast_url": job_url,
         "target_url": target_url,
-        "message": "Target published!"
+        "message": "Target published and multi-signal broadcast dispatched!"
     }), 200
 
 if __name__ == '__main__':
